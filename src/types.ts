@@ -10,9 +10,45 @@ export interface Team {
   lastTapTimestamp?: number;
 }
 
+export type QuestionType =
+  | 'short_answer'
+  | 'multiple_choice'
+  | 'statement_correction'
+  | 'multi_part';
+
+export interface MultipleChoiceOption {
+  id: string; // e.g. "A", "B", "C", "D"
+  label: string; // e.g. "A", "B", "C", "D"
+  text: string;
+}
+
+export interface StatementCorrectionConfig {
+  statement: string; // Keterangan / Pernyataan
+  isTrue: boolean; // Kunci: true = BENAR, false = SALAH
+  correctionKey?: string; // Kunci pernyataan yang benar jika salah
+  correctionAlternatives?: string[]; // Alternatif jawaban koreksi
+  scoringMode?: 'full' | 'partial'; // 'full' (100% or 0%) or 'partial' (e.g. 50% each)
+}
+
+export interface MultiPartItem {
+  id: string;
+  question: string;
+  answerType?: 'short_answer';
+  correctAnswer: string;
+  alternativeAnswers?: string[];
+  pointsWeight?: number;
+}
+
+export interface MultiPartConfig {
+  introduction?: string;
+  parts: MultiPartItem[];
+  scoringMode?: 'full' | 'partial'; // 'full' or 'partial'
+}
+
 export interface Question {
   id: string;
   code: string; // e.g. "Q-01"
+  type?: QuestionType; // Defaults to 'short_answer' if undefined (backward compatible)
   questionText: string;
   correctAnswer: string;
   alternativeAnswers: string[]; // Variations like ["150 cm", "150cm", "1.5 m", "1,5 meter"]
@@ -20,6 +56,16 @@ export interface Question {
   category?: string;
   explanation?: string;
   unitHint?: string; // e.g. "cm", "kg", "m/s"
+
+  // Extension for Multiple Choice
+  options?: MultipleChoiceOption[];
+  correctOptionId?: string; // "A", "B", "C", etc.
+
+  // Extension for Statement Correction
+  statementConfig?: StatementCorrectionConfig;
+
+  // Extension for Multi Part
+  multiPartConfig?: MultiPartConfig;
 }
 
 export type QuestionCardStatus = 'unanswered' | 'correct' | 'wrong' | 'locked';

@@ -36,8 +36,24 @@ import {
   X,
   FileSpreadsheet,
   Zap,
+  Eye,
+  CheckSquare,
+  ListOrdered,
+  FileText,
+  Check,
 } from 'lucide-react';
-import { GameState, Team, Question, TeamColor, GameSettings } from '../types';
+import {
+  GameState,
+  Team,
+  Question,
+  QuestionType,
+  TeamColor,
+  GameSettings,
+  MultipleChoiceOption,
+  StatementCorrectionConfig,
+  MultiPartConfig,
+  MultiPartItem,
+} from '../types';
 import { COLOR_MAP, DEFAULT_QUESTIONS, generateTeamCardDecks } from '../utils/presets';
 import { sound } from '../utils/sound';
 
@@ -96,27 +112,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Question Modal state
   const [isQuestionModalOpen, setIsQuestionModalOpen] = useState(false);
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
+  const [previewQuestion, setPreviewQuestion] = useState<Question | null>(null);
   const [questionSearch, setQuestionSearch] = useState('');
   const [questionForm, setQuestionForm] = useState<{
     code: string;
+    type: QuestionType;
     questionText: string;
     correctAnswer: string;
     alternativeAnswersText: string;
     points: number;
-    answerType: 'text' | 'number' | 'multiple_choice';
     category: string;
     unitHint: string;
     explanation: string;
+    // Multiple Choice
+    options: MultipleChoiceOption[];
+    correctOptionId: string;
+    // Statement Correction
+    statementText: string;
+    statementIsTrue: boolean;
+    correctionKey: string;
+    correctionAlternativesText: string;
+    statementScoringMode: 'full' | 'partial';
+    // Multi Part
+    multiPartIntro: string;
+    multiPartItems: { id: string; question: string; correctAnswer: string; alternativeAnswersText: string }[];
+    multiPartScoringMode: 'full' | 'partial';
   }>({
     code: '',
+    type: 'short_answer',
     questionText: '',
     correctAnswer: '',
     alternativeAnswersText: '',
     points: 10,
-    answerType: 'text',
     category: 'Pengukuran Fisika',
     unitHint: '',
     explanation: '',
+    options: [
+      { id: 'A', label: 'A', text: '' },
+      { id: 'B', label: 'B', text: '' },
+      { id: 'C', label: 'C', text: '' },
+      { id: 'D', label: 'D', text: '' },
+    ],
+    correctOptionId: 'A',
+    statementText: '',
+    statementIsTrue: false,
+    correctionKey: '',
+    correctionAlternativesText: '',
+    statementScoringMode: 'full',
+    multiPartIntro: '',
+    multiPartItems: [
+      { id: 'p-1', question: '', correctAnswer: '', alternativeAnswersText: '' },
+      { id: 'p-2', question: '', correctAnswer: '', alternativeAnswersText: '' },
+    ],
+    multiPartScoringMode: 'partial',
   });
   const [questionError, setQuestionError] = useState<string | null>(null);
 
@@ -274,14 +322,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const nextNumber = String(questions.length + 1).padStart(2, '0');
     setQuestionForm({
       code: `Q-${nextNumber}`,
+      type: 'short_answer',
       questionText: '',
       correctAnswer: '',
       alternativeAnswersText: '',
       points: settings.pointsPerCorrect || 10,
-      answerType: 'text',
       category: 'Pengukuran Fisika',
       unitHint: '',
       explanation: '',
+      options: [
+        { id: 'A', label: 'A', text: '' },
+        { id: 'B', label: 'B', text: '' },
+        { id: 'C', label: 'C', text: '' },
+        { id: 'D', label: 'D', text: '' },
+      ],
+      correctOptionId: 'A',
+      statementText: '',
+      statementIsTrue: false,
+      correctionKey: '',
+      correctionAlternativesText: '',
+      statementScoringMode: 'full',
+      multiPartIntro: '',
+      multiPartItems: [
+        { id: 'p-1', question: '', correctAnswer: '', alternativeAnswersText: '' },
+        { id: 'p-2', question: '', correctAnswer: '', alternativeAnswersText: '' },
+      ],
+      multiPartScoringMode: 'partial',
     });
     setIsQuestionModalOpen(true);
   };
@@ -289,16 +355,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const openEditQuestionModal = (question: Question) => {
     setEditingQuestionId(question.id);
     setQuestionError(null);
+    const qType: QuestionType = question.type || 'short_answer';
+
+    // Parse options for Multiple Choice
+    const defaultOptions: MultipleChoiceOption[] = [
+      { id: 'A', label: 'A', text: '' },
+      { id: 'B', label: 'B', text: '' },
+      { id: 'C', label: 'C', text: '' },
+      { id: 'D', label: 'D', text: '' },
+    ];
+    const resolvedOptions = question.options && question.options.length > 0 ? question.options : defaultOptions;
+
+    // Parse Statement Correction fields
+    const statementText = question.statementConfig?.statement || (qType === 'statement_correction' ? question.questionText : '');
+    const statementIsTrue = question.statementConfig?.isTrue ?? false;
+    const correctionKey = question.statementConfig?.correctionKey || (qType === 'statement_correction' ? question.correctAnswer : '');
+    const correctionAlternativesText = (question.statementConfig?.correctionAlternatives || []).join(', ');
+    const statementScoringMode = question.statementConfig?.scoringMode || 'full';
+
+    // Parse Multi Part fields
+    const multiPartIntro = question.multiPartConfig?.introduction || '';
+    const multiPartItems = (question.multiPartConfig?.parts || []).map((p, idx) => ({
+      id: p.id || `p-${idx + 1}`,
+      question: p.question || '',
+      correctAnswer: p.correctAnswer || '',
+      alternativeAnswersText: (p.alternativeAnswers || []).join(', '),
+    }));
+    const resolvedMultiParts = multiPartItems.length > 0
+      ? multiPartItems
+      : [
+          { id: 'p-1', question: question.questionText, correctAnswer: question.correctAnswer, alternativeAnswersText: '' },
+          { id: 'p-2', question: '', correctAnswer: '', alternativeAnswersText: '' },
+        ];
+    const multiPartScoringMode = question.multiPartConfig?.scoringMode || 'partial';
+
     setQuestionForm({
       code: question.code || `Q-${question.id}`,
-      questionText: question.questionText,
-      correctAnswer: question.correctAnswer,
+      type: qType,
+      questionText: question.questionText || '',
+      correctAnswer: question.correctAnswer || '',
       alternativeAnswersText: (question.alternativeAnswers || []).join(', '),
       points: question.points || 10,
-      answerType: 'text',
       category: question.category || 'Pengukuran Fisika',
       unitHint: question.unitHint || '',
       explanation: question.explanation || '',
+      options: resolvedOptions,
+      correctOptionId: question.correctOptionId || 'A',
+      statementText,
+      statementIsTrue,
+      correctionKey,
+      correctionAlternativesText,
+      statementScoringMode,
+      multiPartIntro,
+      multiPartItems: resolvedMultiParts,
+      multiPartScoringMode,
     });
     setIsQuestionModalOpen(true);
   };
@@ -306,23 +416,102 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleSaveQuestion = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!questionForm.questionText.trim()) {
-      setQuestionError('Pertanyaan harus diisi.');
-      return;
-    }
-    if (!questionForm.correctAnswer.trim()) {
-      setQuestionError('Kunci jawaban harus diisi.');
-      return;
-    }
     if (questionForm.points <= 0) {
       setQuestionError('Poin harus lebih besar dari 0.');
       return;
     }
 
-    const altAnswers = questionForm.alternativeAnswersText
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    let finalQuestionText = '';
+    let finalCorrectAnswer = '';
+    let finalAltAnswers: string[] = [];
+    let extraData: Partial<Question> = {
+      type: questionForm.type,
+    };
+
+    if (questionForm.type === 'short_answer') {
+      if (!questionForm.questionText.trim()) {
+        setQuestionError('Pertanyaan harus diisi.');
+        return;
+      }
+      if (!questionForm.correctAnswer.trim()) {
+        setQuestionError('Kunci jawaban harus diisi.');
+        return;
+      }
+      finalQuestionText = questionForm.questionText.trim();
+      finalCorrectAnswer = questionForm.correctAnswer.trim();
+      finalAltAnswers = questionForm.alternativeAnswersText
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      extraData.unitHint = questionForm.unitHint.trim();
+    } else if (questionForm.type === 'multiple_choice') {
+      if (!questionForm.questionText.trim()) {
+        setQuestionError('Teks pertanyaan pilihan ganda harus diisi.');
+        return;
+      }
+      const validOptions = questionForm.options.filter((o) => o.text.trim().length > 0);
+      if (validOptions.length < 2) {
+        setQuestionError('Minimal harus ada 2 pilihan jawaban.');
+        return;
+      }
+      const selectedOpt = validOptions.find((o) => o.id === questionForm.correctOptionId) || validOptions[0];
+      finalQuestionText = questionForm.questionText.trim();
+      finalCorrectAnswer = selectedOpt.id;
+      finalAltAnswers = [selectedOpt.id, selectedOpt.text.trim()];
+      extraData.options = validOptions;
+      extraData.correctOptionId = selectedOpt.id;
+    } else if (questionForm.type === 'statement_correction') {
+      if (!questionForm.statementText.trim()) {
+        setQuestionError('Teks pernyataan harus diisi.');
+        return;
+      }
+      if (!questionForm.statementIsTrue && !questionForm.correctionKey.trim()) {
+        setQuestionError('Kunci pernyataan yang benar wajib diisi karena pernyataan bernilai SALAH.');
+        return;
+      }
+      finalQuestionText = questionForm.statementText.trim();
+      finalCorrectAnswer = questionForm.statementIsTrue
+        ? 'BENAR'
+        : `SALAH (Koreksi: ${questionForm.correctionKey.trim()})`;
+      const corrAlts = questionForm.correctionAlternativesText
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      finalAltAnswers = questionForm.statementIsTrue
+        ? ['benar', 'true']
+        : [questionForm.correctionKey.trim(), ...corrAlts];
+      extraData.statementConfig = {
+        statement: questionForm.statementText.trim(),
+        isTrue: questionForm.statementIsTrue,
+        correctionKey: questionForm.statementIsTrue ? undefined : questionForm.correctionKey.trim(),
+        correctionAlternatives: questionForm.statementIsTrue ? undefined : corrAlts,
+        scoringMode: questionForm.statementScoringMode,
+      };
+    } else if (questionForm.type === 'multi_part') {
+      const validParts = questionForm.multiPartItems.filter(
+        (p) => p.question.trim().length > 0 && p.correctAnswer.trim().length > 0
+      );
+      if (validParts.length < 2) {
+        setQuestionError('Minimal harus ada 2 sub-pertanyaan yang diisi dengan lengkap.');
+        return;
+      }
+      finalQuestionText = questionForm.multiPartIntro.trim() || validParts[0].question.trim();
+      finalCorrectAnswer = validParts.map((p, idx) => `P${idx + 1}: ${p.correctAnswer.trim()}`).join(' | ');
+      finalAltAnswers = [];
+      extraData.multiPartConfig = {
+        introduction: questionForm.multiPartIntro.trim(),
+        scoringMode: questionForm.multiPartScoringMode,
+        parts: validParts.map((p) => ({
+          id: p.id,
+          question: p.question.trim(),
+          correctAnswer: p.correctAnswer.trim(),
+          alternativeAnswers: p.alternativeAnswersText
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        })),
+      };
+    }
 
     if (editingQuestionId) {
       // Update existing
@@ -331,13 +520,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           ? {
               ...q,
               code: questionForm.code.trim() || q.code,
-              questionText: questionForm.questionText.trim(),
-              correctAnswer: questionForm.correctAnswer.trim(),
-              alternativeAnswers: altAnswers,
+              questionText: finalQuestionText,
+              correctAnswer: finalCorrectAnswer,
+              alternativeAnswers: finalAltAnswers,
               points: Number(questionForm.points),
               category: questionForm.category.trim(),
-              unitHint: questionForm.unitHint.trim(),
               explanation: questionForm.explanation.trim(),
+              ...extraData,
             }
           : q
       );
@@ -348,13 +537,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const newQuestion: Question = {
         id: `q-${Date.now()}`,
         code: questionForm.code.trim() || `Q-${String(questions.length + 1).padStart(2, '0')}`,
-        questionText: questionForm.questionText.trim(),
-        correctAnswer: questionForm.correctAnswer.trim(),
-        alternativeAnswers: altAnswers,
+        questionText: finalQuestionText,
+        correctAnswer: finalCorrectAnswer,
+        alternativeAnswers: finalAltAnswers,
         points: Number(questionForm.points),
         category: questionForm.category.trim(),
-        unitHint: questionForm.unitHint.trim(),
         explanation: questionForm.explanation.trim(),
+        ...extraData,
       };
       const updated = [...questions, newQuestion];
       onUpdateQuestions(updated);
@@ -1212,58 +1401,88 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <thead className="bg-slate-950/80 border-b border-white/10 text-slate-400 font-bold uppercase tracking-wider">
                         <tr>
                           <th className="p-3 w-12 text-center">No</th>
+                          <th className="p-3 w-32">Jenis</th>
                           <th className="p-3">Pertanyaan</th>
                           <th className="p-3">Kunci Jawaban (Admin)</th>
-                          <th className="p-3 w-20 text-center">Poin</th>
-                          <th className="p-3 w-24 text-center">Status</th>
-                          <th className="p-3 w-24 text-center">Aksi</th>
+                          <th className="p-3 w-16 text-center">Poin</th>
+                          <th className="p-3 w-28 text-center">Aksi</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5 font-medium">
-                        {questions.slice(0, 5).map((q, idx) => (
-                          <tr key={q.id} className="hover:bg-white/5 transition-colors">
-                            <td className="p-3 text-center font-bold text-cyan-400">
-                              {String(idx + 1).padStart(2, '0')}
-                            </td>
-                            <td className="p-3 text-slate-200">
-                              <p className="line-clamp-1 font-semibold">{q.questionText}</p>
-                              {q.category && (
-                                <span className="text-[10px] text-slate-500 font-normal">{q.category}</span>
-                              )}
-                            </td>
-                            <td className="p-3">
-                              <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 font-mono font-bold">
-                                {q.correctAnswer}
-                              </span>
-                            </td>
-                            <td className="p-3 text-center font-bold text-cyan-400">{q.points || 10}</td>
-                            <td className="p-3 text-center">
-                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 text-[10px] font-bold">
-                                Aktif
-                              </span>
-                            </td>
-                            <td className="p-3 text-center">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => openEditQuestionModal(q)}
-                                  className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"
-                                  title="Edit Soal"
+                        {questions.slice(0, 6).map((q, idx) => {
+                          const qType = q.type || 'short_answer';
+                          const typeLabel =
+                            qType === 'multiple_choice'
+                              ? 'Pilihan Ganda'
+                              : qType === 'statement_correction'
+                              ? 'B/S + Koreksi'
+                              : qType === 'multi_part'
+                              ? 'Multi Part'
+                              : 'Jawaban Singkat';
+                          const typeColor =
+                            qType === 'multiple_choice'
+                              ? 'bg-purple-500/15 border-purple-400/30 text-purple-300'
+                              : qType === 'statement_correction'
+                              ? 'bg-amber-500/15 border-amber-400/30 text-amber-300'
+                              : qType === 'multi_part'
+                              ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-300'
+                              : 'bg-cyan-500/15 border-cyan-400/30 text-cyan-300';
+
+                          return (
+                            <tr key={q.id} className="hover:bg-white/5 transition-colors">
+                              <td className="p-3 text-center font-bold text-cyan-400">
+                                {String(idx + 1).padStart(2, '0')}
+                              </td>
+                              <td className="p-3">
+                                <span
+                                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border ${typeColor}`}
                                 >
-                                  <Edit3 className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteQuestion(q.id)}
-                                  className="p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
-                                  title="Hapus Soal"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                                  {typeLabel}
+                                </span>
+                              </td>
+                              <td className="p-3 text-slate-200">
+                                <p className="line-clamp-1 font-semibold">{q.questionText}</p>
+                                {q.category && (
+                                  <span className="text-[10px] text-slate-500 font-normal">{q.category}</span>
+                                )}
+                              </td>
+                              <td className="p-3">
+                                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-[11px] line-clamp-1">
+                                  {q.correctAnswer}
+                                </span>
+                              </td>
+                              <td className="p-3 text-center font-bold text-cyan-400">{q.points || 10}</td>
+                              <td className="p-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => setPreviewQuestion(q)}
+                                    className="p-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 hover:text-white cursor-pointer"
+                                    title="Preview Soal"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditQuestionModal(q)}
+                                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"
+                                    title="Edit Soal"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteQuestion(q.id)}
+                                    className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
+                                    title="Hapus Soal"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1631,55 +1850,103 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {/* Full Table */}
               <div className="overflow-x-auto rounded-2xl border border-white/10">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-950/80 border-b border-white/10 text-slate-400 font-bold uppercase">
+                  <thead className="bg-slate-950/80 border-b border-white/10 text-slate-400 font-bold uppercase tracking-wider">
                     <tr>
                       <th className="p-3 w-12 text-center">No</th>
-                      <th className="p-3">Pertanyaan</th>
+                      <th className="p-3 w-32">Jenis Soal</th>
+                      <th className="p-3">Pertanyaan & Pengantar</th>
                       <th className="p-3">Kunci Jawaban</th>
-                      <th className="p-3">Alternatif Jawaban</th>
-                      <th className="p-3 w-20 text-center">Poin</th>
-                      <th className="p-3 w-24 text-center">Aksi</th>
+                      <th className="p-3">Alternatif / Detail</th>
+                      <th className="p-3 w-16 text-center">Poin</th>
+                      <th className="p-3 w-28 text-center">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 font-medium">
-                    {filteredQuestions.map((q, idx) => (
-                      <tr key={q.id} className="hover:bg-white/5 transition-colors">
-                        <td className="p-3 text-center font-bold text-cyan-400">
-                          {String(idx + 1).padStart(2, '0')}
-                        </td>
-                        <td className="p-3 text-slate-200">
-                          <p className="font-semibold">{q.questionText}</p>
-                          <span className="text-[10px] text-slate-500">{q.category}</span>
-                        </td>
-                        <td className="p-3">
-                          <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 font-mono font-bold">
-                            {q.correctAnswer}
-                          </span>
-                        </td>
-                        <td className="p-3 text-slate-400 text-[11px]">
-                          {(q.alternativeAnswers || []).join(', ') || '-'}
-                        </td>
-                        <td className="p-3 text-center font-bold text-cyan-400">{q.points || 10}</td>
-                        <td className="p-3 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => openEditQuestionModal(q)}
-                              className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 cursor-pointer"
+                    {filteredQuestions.map((q, idx) => {
+                      const qType = q.type || 'short_answer';
+                      const typeLabel =
+                        qType === 'multiple_choice'
+                          ? 'Pilihan Ganda'
+                          : qType === 'statement_correction'
+                          ? 'B/S + Koreksi'
+                          : qType === 'multi_part'
+                          ? 'Multi Part'
+                          : 'Jawaban Singkat';
+                      const typeColor =
+                        qType === 'multiple_choice'
+                          ? 'bg-purple-500/15 border-purple-400/30 text-purple-300'
+                          : qType === 'statement_correction'
+                          ? 'bg-amber-500/15 border-amber-400/30 text-amber-300'
+                          : qType === 'multi_part'
+                          ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-300'
+                          : 'bg-cyan-500/15 border-cyan-400/30 text-cyan-300';
+
+                      return (
+                        <tr key={q.id} className="hover:bg-white/5 transition-colors">
+                          <td className="p-3 text-center font-bold text-cyan-400">
+                            {String(idx + 1).padStart(2, '0')}
+                          </td>
+                          <td className="p-3">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border ${typeColor}`}
                             >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteQuestion(q.id)}
-                              className="p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                              {typeLabel}
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-200">
+                            <p className="font-semibold">{q.questionText}</p>
+                            {q.category && (
+                              <span className="text-[10px] text-slate-500">{q.category}</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-[11px]">
+                              {q.correctAnswer}
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-400 text-[11px]">
+                            {qType === 'multiple_choice' && q.options && q.options.length > 0
+                              ? `${q.options.length} Opsi (${q.options.map((o) => o.id).join(', ')})`
+                              : qType === 'statement_correction'
+                              ? q.statementConfig?.isTrue
+                                ? 'Status: BENAR'
+                                : `Koreksi: ${q.statementConfig?.correctionKey || '-'}`
+                              : qType === 'multi_part'
+                              ? `${q.multiPartConfig?.parts?.length || 0} Sub-Soal (${q.multiPartConfig?.scoringMode === 'partial' ? 'Poin Parsial' : 'Poin Penuh'})`
+                              : (q.alternativeAnswers || []).join(', ') || '-'}
+                          </td>
+                          <td className="p-3 text-center font-bold text-cyan-400">{q.points || 10}</td>
+                          <td className="p-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setPreviewQuestion(q)}
+                                className="p-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 hover:text-white cursor-pointer"
+                                title="Preview Soal"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openEditQuestionModal(q)}
+                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"
+                                title="Edit Soal"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteQuestion(q.id)}
+                                className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
+                                title="Hapus Soal"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1818,11 +2085,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       </div>
 
       {/* ========================================================= */}
-      {/* 5. MODAL TAMBAH & EDIT SOAL */}
+      {/* 5. MODAL TAMBAH & EDIT SOAL (DYNAMIC MULTI-TYPE) */}
       {/* ========================================================= */}
       {isQuestionModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-cyan-400/30 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-[0_0_60px_rgba(6,182,212,0.2)] space-y-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-slate-900 border border-cyan-400/30 rounded-3xl max-w-3xl w-full p-6 sm:p-8 shadow-[0_0_60px_rgba(6,182,212,0.2)] space-y-6 my-8 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-white/10 pb-4">
               <div>
                 <span className="text-xs font-black text-cyan-400 uppercase tracking-widest">
@@ -1848,92 +2116,550 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             )}
 
-            <form onSubmit={handleSaveQuestion} className="space-y-4">
-              {/* Pertanyaan */}
-              <div className="space-y-1.5">
+            <form onSubmit={handleSaveQuestion} className="space-y-5">
+              {/* Question Type Selector (4 Types) */}
+              <div className="space-y-2">
                 <label className="block text-xs font-bold text-slate-300 uppercase">
-                  Pertanyaan <span className="text-rose-400">*</span>
+                  PILIH JENIS SOAL <span className="text-rose-400">*</span>
                 </label>
-                <textarea
-                  rows={3}
-                  value={questionForm.questionText}
-                  onChange={(e) => setQuestionForm({ ...questionForm, questionText: e.target.value })}
-                  placeholder="Tuliskan teks pertanyaan soal lengkap di sini..."
-                  className="w-full bg-slate-950 border border-white/15 focus:border-cyan-400 rounded-2xl p-3.5 text-sm font-semibold text-white outline-none"
-                />
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {[
+                    {
+                      type: 'short_answer' as QuestionType,
+                      label: 'Jawaban Singkat',
+                      desc: 'Isian teks / angka',
+                      icon: <FileText className="w-4 h-4" />,
+                      color: 'border-cyan-400 text-cyan-300 bg-cyan-500/20',
+                    },
+                    {
+                      type: 'multiple_choice' as QuestionType,
+                      label: 'Pilihan Ganda',
+                      desc: 'Opsi A, B, C, D...',
+                      icon: <CheckSquare className="w-4 h-4" />,
+                      color: 'border-purple-400 text-purple-300 bg-purple-500/20',
+                    },
+                    {
+                      type: 'statement_correction' as QuestionType,
+                      label: 'B/S + Koreksi',
+                      desc: 'Verifikasi & pembetulan',
+                      icon: <CheckCircle className="w-4 h-4" />,
+                      color: 'border-amber-400 text-amber-300 bg-amber-500/20',
+                    },
+                    {
+                      type: 'multi_part' as QuestionType,
+                      label: '2 Soal (Multi-Part)',
+                      desc: 'Sub-pertanyaan 1 & 2',
+                      icon: <ListOrdered className="w-4 h-4" />,
+                      color: 'border-emerald-400 text-emerald-300 bg-emerald-500/20',
+                    },
+                  ].map((item) => (
+                    <button
+                      key={item.type}
+                      type="button"
+                      onClick={() => setQuestionForm({ ...questionForm, type: item.type })}
+                      className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        questionForm.type === item.type
+                          ? `${item.color} shadow-lg shadow-black/40 ring-1 ring-white/20`
+                          : 'bg-slate-950/60 border-white/10 text-slate-400 hover:border-white/20 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="p-1.5 rounded-lg bg-white/5">{item.icon}</span>
+                        {questionForm.type === item.type && <Check className="w-3.5 h-3.5" />}
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold leading-tight">{item.label}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5 opacity-80">{item.desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Kunci Jawaban */}
+              {/* DYNAMIC FORM FIELDS BASED ON QUESTION TYPE */}
+
+              {/* 1. TIPE: JAWABAN SINGKAT */}
+              {questionForm.type === 'short_answer' && (
+                <div className="space-y-4 p-4 rounded-2xl bg-slate-950/50 border border-cyan-400/20">
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Pertanyaan <span className="text-rose-400">*</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={questionForm.questionText}
+                      onChange={(e) => setQuestionForm({ ...questionForm, questionText: e.target.value })}
+                      placeholder="Tuliskan teks pertanyaan isian singkat di sini..."
+                      className="w-full bg-slate-900 border border-white/15 focus:border-cyan-400 rounded-xl p-3 text-sm font-semibold text-white outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-300 uppercase">
+                        Kunci Jawaban Utama <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={questionForm.correctAnswer}
+                        onChange={(e) => setQuestionForm({ ...questionForm, correctAnswer: e.target.value })}
+                        placeholder="Contoh: 250 cm atau 120"
+                        className="w-full bg-slate-900 border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-300 uppercase">
+                        Petunjuk Satuan (Opsional)
+                      </label>
+                      <input
+                        type="text"
+                        value={questionForm.unitHint}
+                        onChange={(e) => setQuestionForm({ ...questionForm, unitHint: e.target.value })}
+                        placeholder="Contoh: cm, kg, m/s"
+                        className="w-full bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Variasi Kunci Jawaban (Pisahkan Koma)
+                    </label>
+                    <input
+                      type="text"
+                      value={questionForm.alternativeAnswersText}
+                      onChange={(e) => setQuestionForm({ ...questionForm, alternativeAnswersText: e.target.value })}
+                      placeholder="Contoh: 250cm, 2.5 m, 2,5 meter"
+                      className="w-full bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 2. TIPE: PILIHAN GANDA */}
+              {questionForm.type === 'multiple_choice' && (
+                <div className="space-y-4 p-4 rounded-2xl bg-slate-950/50 border border-purple-400/20">
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Pertanyaan Pilihan Ganda <span className="text-rose-400">*</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={questionForm.questionText}
+                      onChange={(e) => setQuestionForm({ ...questionForm, questionText: e.target.value })}
+                      placeholder="Tuliskan teks pertanyaan pilihan ganda di sini..."
+                      className="w-full bg-slate-900 border border-white/15 focus:border-purple-400 rounded-xl p-3 text-sm font-semibold text-white outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-300 uppercase">
+                        Daftar Pilihan Jawaban & Kunci Benar <span className="text-rose-400">*</span>
+                      </label>
+                      <span className="text-[11px] text-purple-300">Pilih radio button pada opsi yang BENAR</span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {questionForm.options.map((opt, optIdx) => {
+                        const isCorrect = questionForm.correctOptionId === opt.id;
+                        return (
+                          <div
+                            key={opt.id}
+                            className={`flex items-center gap-3 p-2.5 rounded-xl border transition-all ${
+                              isCorrect
+                                ? 'bg-purple-500/20 border-purple-400/60 ring-1 ring-purple-400/30'
+                                : 'bg-slate-900 border-white/10'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setQuestionForm({ ...questionForm, correctOptionId: opt.id })}
+                              className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs cursor-pointer ${
+                                isCorrect
+                                  ? 'bg-purple-500 text-white font-black'
+                                  : 'bg-white/5 text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+
+                            <input
+                              type="text"
+                              value={opt.text}
+                              onChange={(e) => {
+                                const newOpts = [...questionForm.options];
+                                newOpts[optIdx] = { ...opt, text: e.target.value };
+                                setQuestionForm({ ...questionForm, options: newOpts });
+                              }}
+                              placeholder={`Pilihan teks untuk opsi ${opt.label}...`}
+                              className="flex-1 bg-transparent border-0 text-sm text-white outline-none font-medium"
+                            />
+
+                            {questionForm.options.length > 2 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const newOpts = questionForm.options.filter((_, i) => i !== optIdx);
+                                  const updatedCorrectId =
+                                    questionForm.correctOptionId === opt.id
+                                      ? newOpts[0]?.id || 'A'
+                                      : questionForm.correctOptionId;
+                                  setQuestionForm({
+                                    ...questionForm,
+                                    options: newOpts,
+                                    correctOptionId: updatedCorrectId,
+                                  });
+                                }}
+                                className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
+                                title="Hapus Opsi"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {questionForm.options.length < 5 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const labels = ['A', 'B', 'C', 'D', 'E'];
+                          const nextLabel = labels[questionForm.options.length] || `O${questionForm.options.length + 1}`;
+                          setQuestionForm({
+                            ...questionForm,
+                            options: [...questionForm.options, { id: nextLabel, label: nextLabel, text: '' }],
+                          });
+                        }}
+                        className="mt-2 px-3 py-1.5 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-400/30 text-purple-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Tambah Opsi ({['A', 'B', 'C', 'D', 'E'][questionForm.options.length] || '+'})
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 3. TIPE: PERNYATAAN BENAR/SALAH + KOREKSI */}
+              {questionForm.type === 'statement_correction' && (
+                <div className="space-y-4 p-4 rounded-2xl bg-slate-950/50 border border-amber-400/20">
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Teks Pernyataan <span className="text-rose-400">*</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={questionForm.statementText}
+                      onChange={(e) => setQuestionForm({ ...questionForm, statementText: e.target.value })}
+                      placeholder='Contoh: "1 kilogram setara dengan 100 gram." atau "Mikrometer sekrup memiliki ketelitian 0,01 mm."'
+                      className="w-full bg-slate-900 border border-white/15 focus:border-amber-400 rounded-xl p-3 text-sm font-semibold text-white outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Kunci Status Kebenaran Pernyataan <span className="text-rose-400">*</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, statementIsTrue: true })}
+                        className={`p-3 rounded-xl border flex items-center justify-center gap-2 font-bold text-xs uppercase cursor-pointer transition-all ${
+                          questionForm.statementIsTrue
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-md ring-1 ring-emerald-400/40'
+                            : 'bg-slate-900 border-white/10 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        Pernyataan BENAR
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, statementIsTrue: false })}
+                        className={`p-3 rounded-xl border flex items-center justify-center gap-2 font-bold text-xs uppercase cursor-pointer transition-all ${
+                          !questionForm.statementIsTrue
+                            ? 'bg-rose-500/20 border-rose-400 text-rose-300 shadow-md ring-1 ring-rose-400/40'
+                            : 'bg-slate-900 border-white/10 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <XCircle className="w-4 h-4 text-rose-400" />
+                        Pernyataan SALAH (Butuh Koreksi)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Jika SALAH, tampilkan input koreksi */}
+                  {!questionForm.statementIsTrue && (
+                    <div className="space-y-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-400/30 animate-in fade-in">
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-bold text-amber-300 uppercase">
+                          Kunci Pembetulan / Koreksi Yang Benar <span className="text-rose-400">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={questionForm.correctionKey}
+                          onChange={(e) => setQuestionForm({ ...questionForm, correctionKey: e.target.value })}
+                          placeholder="Contoh: 1000 gram atau 1.000 gram"
+                          className="w-full bg-slate-900 border border-amber-400/40 focus:border-amber-300 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-bold text-slate-300 uppercase">
+                          Variasi Jawaban Koreksi (Pisahkan Koma)
+                        </label>
+                        <input
+                          type="text"
+                          value={questionForm.correctionAlternativesText}
+                          onChange={(e) =>
+                            setQuestionForm({ ...questionForm, correctionAlternativesText: e.target.value })
+                          }
+                          placeholder="Contoh: 1000 g, 1000gr, seribu gram"
+                          className="w-full bg-slate-900 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Mode Penilaian B/S */}
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">Mode Penilaian</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, statementScoringMode: 'full' })}
+                        className={`p-2.5 rounded-xl border text-left cursor-pointer ${
+                          questionForm.statementScoringMode === 'full'
+                            ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                            : 'bg-slate-900 border-white/10 text-slate-400'
+                        }`}
+                      >
+                        <p className="text-xs font-bold">Penilaian Penuh</p>
+                        <p className="text-[10px] text-slate-400">100% poin jika seluruhnya benar</p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, statementScoringMode: 'partial' })}
+                        className={`p-2.5 rounded-xl border text-left cursor-pointer ${
+                          questionForm.statementScoringMode === 'partial'
+                            ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                            : 'bg-slate-900 border-white/10 text-slate-400'
+                        }`}
+                      >
+                        <p className="text-xs font-bold">Penilaian Parsial</p>
+                        <p className="text-[10px] text-slate-400">50% cek B/S + 50% teks koreksi</p>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 4. TIPE: MULTI PART (2+ SUB-PERTANYAAN) */}
+              {questionForm.type === 'multi_part' && (
+                <div className="space-y-4 p-4 rounded-2xl bg-slate-950/50 border border-emerald-400/20">
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Teks Pengantar / Kasus (Opsional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={questionForm.multiPartIntro}
+                      onChange={(e) => setQuestionForm({ ...questionForm, multiPartIntro: e.target.value })}
+                      placeholder="Contoh: Sebuah balok padat bermassa 200 gram dan bervolume 50 cm³ dimasukkan ke bejana air..."
+                      className="w-full bg-slate-900 border border-white/15 focus:border-emerald-400 rounded-xl p-3 text-sm text-white outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-300 uppercase">
+                        Daftar Sub-Pertanyaan ({questionForm.multiPartItems.length}) <span className="text-rose-400">*</span>
+                      </label>
+                      <span className="text-[11px] text-emerald-300">Setiap bagian memiliki kunci jawaban terpisah</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {questionForm.multiPartItems.map((part, partIdx) => (
+                        <div
+                          key={part.id}
+                          className="p-3.5 rounded-xl bg-slate-900 border border-emerald-400/30 space-y-2.5 relative"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-emerald-400">
+                              SUB-PERTANYAAN #{partIdx + 1}
+                            </span>
+                            {questionForm.multiPartItems.length > 2 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const updated = questionForm.multiPartItems.filter((_, i) => i !== partIdx);
+                                  setQuestionForm({ ...questionForm, multiPartItems: updated });
+                                }}
+                                className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
+                                title="Hapus Sub-Pertanyaan"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase">
+                              Teks Pertanyaan
+                            </label>
+                            <input
+                              type="text"
+                              value={part.question}
+                              onChange={(e) => {
+                                const updated = [...questionForm.multiPartItems];
+                                updated[partIdx] = { ...part, question: e.target.value };
+                                setQuestionForm({ ...questionForm, multiPartItems: updated });
+                              }}
+                              placeholder={`Pertanyaan sub #${partIdx + 1}...`}
+                              className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none font-semibold"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div className="space-y-1">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase">
+                                Kunci Jawaban
+                              </label>
+                              <input
+                                type="text"
+                                value={part.correctAnswer}
+                                onChange={(e) => {
+                                  const updated = [...questionForm.multiPartItems];
+                                  updated[partIdx] = { ...part, correctAnswer: e.target.value };
+                                  setQuestionForm({ ...questionForm, multiPartItems: updated });
+                                }}
+                                placeholder="Kunci jawaban sub ini..."
+                                className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none font-bold"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase">
+                                Variasi Kunci (Pisahkan Koma)
+                              </label>
+                              <input
+                                type="text"
+                                value={part.alternativeAnswersText}
+                                onChange={(e) => {
+                                  const updated = [...questionForm.multiPartItems];
+                                  updated[partIdx] = { ...part, alternativeAnswersText: e.target.value };
+                                  setQuestionForm({ ...questionForm, multiPartItems: updated });
+                                }}
+                                placeholder="Contoh: 4, 4 g/cm3"
+                                className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 outline-none"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {questionForm.multiPartItems.length < 4 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuestionForm({
+                            ...questionForm,
+                            multiPartItems: [
+                              ...questionForm.multiPartItems,
+                              {
+                                id: `p-${questionForm.multiPartItems.length + 1}`,
+                                question: '',
+                                correctAnswer: '',
+                                alternativeAnswersText: '',
+                              },
+                            ],
+                          });
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        + Tambah Sub-Pertanyaan (#{questionForm.multiPartItems.length + 1})
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Mode Penilaian Multi-Part */}
+                  <div className="space-y-1.5 pt-2">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">Mode Pembagian Skor</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, multiPartScoringMode: 'partial' })}
+                        className={`p-2.5 rounded-xl border text-left cursor-pointer ${
+                          questionForm.multiPartScoringMode === 'partial'
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                            : 'bg-slate-900 border-white/10 text-slate-400'
+                        }`}
+                      >
+                        <p className="text-xs font-bold">Skor Proporsional (Parsial)</p>
+                        <p className="text-[10px] text-slate-400">Poin dibagi rata sesuai sub yang benar</p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, multiPartScoringMode: 'full' })}
+                        className={`p-2.5 rounded-xl border text-left cursor-pointer ${
+                          questionForm.multiPartScoringMode === 'full'
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                            : 'bg-slate-900 border-white/10 text-slate-400'
+                        }`}
+                      >
+                        <p className="text-xs font-bold">Semua Wajib Benar (Penuh)</p>
+                        <p className="text-[10px] text-slate-400">Poin hanya jika semua sub benar</p>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* COMMON FIELDS: POIN, KATEGORI, PENJELASAN */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">
-                    Kunci Jawaban Utama <span className="text-rose-400">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={questionForm.correctAnswer}
-                    onChange={(e) => setQuestionForm({ ...questionForm, correctAnswer: e.target.value })}
-                    placeholder="Contoh: 250 cm atau 12"
-                    className="w-full bg-slate-950 border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white outline-none"
-                  />
-                </div>
-
-                {/* Alternatif Jawaban */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">
-                    Variasi Jawaban (Pisahkan Koma)
-                  </label>
-                  <input
-                    type="text"
-                    value={questionForm.alternativeAnswersText}
-                    onChange={(e) => setQuestionForm({ ...questionForm, alternativeAnswersText: e.target.value })}
-                    placeholder="Contoh: 250cm, 2.5 m, 2,5 meter"
-                    className="w-full bg-slate-950 border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Poin, Tipe, Satuan */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">Poin</label>
+                  <label className="block text-xs font-bold text-slate-300 uppercase">Total Poin</label>
                   <input
                     type="number"
                     min={1}
                     value={questionForm.points}
                     onChange={(e) => setQuestionForm({ ...questionForm, points: Number(e.target.value) || 10 })}
-                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-sm font-bold text-white outline-none"
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3.5 py-2 text-sm font-bold text-white outline-none"
                   />
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">Tipe Jawaban</label>
-                  <select
-                    value={questionForm.answerType}
-                    onChange={(e) =>
-                      setQuestionForm({
-                        ...questionForm,
-                        answerType: e.target.value as typeof questionForm.answerType,
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-xs font-semibold text-white outline-none cursor-pointer"
-                  >
-                    <option value="text">Text</option>
-                    <option value="number">Angka</option>
-                    <option value="multiple_choice">Pilihan Ganda</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">Petunjuk Satuan</label>
+                  <label className="block text-xs font-bold text-slate-300 uppercase">Kategori / Topik</label>
                   <input
                     type="text"
-                    value={questionForm.unitHint}
-                    onChange={(e) => setQuestionForm({ ...questionForm, unitHint: e.target.value })}
-                    placeholder="Contoh: cm, kg"
-                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-xs text-white outline-none"
+                    value={questionForm.category}
+                    onChange={(e) => setQuestionForm({ ...questionForm, category: e.target.value })}
+                    placeholder="Contoh: Pengukuran Panjang, Massa Jenis"
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-300 uppercase">
+                  Pembahasan / Penjelasan Guru (Opsional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={questionForm.explanation}
+                  onChange={(e) => setQuestionForm({ ...questionForm, explanation: e.target.value })}
+                  placeholder="Tuliskan rumus atau pembahasan yang akan tampil di ulasan ronde..."
+                  className="w-full bg-slate-950 border border-white/15 rounded-xl p-3 text-xs text-slate-200 outline-none"
+                />
               </div>
 
               {/* Modal Buttons */}
@@ -1958,7 +2684,166 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       )}
 
       {/* ========================================================= */}
-      {/* 6. MODAL KONFIRMASI MUAT DATA DEMO */}
+      {/* 6. MODAL INTERAKTIF: PREVIEW SOAL GURU */}
+      {/* ========================================================= */}
+      {previewQuestion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-cyan-400/40 rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-[0_0_60px_rgba(6,182,212,0.2)] space-y-6">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center text-cyan-400">
+                  <Eye className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-xs font-black text-cyan-400 uppercase tracking-widest">
+                    PREVIEW SOAL ({previewQuestion.code})
+                  </span>
+                  <h3 className="text-base font-bold text-white">
+                    {previewQuestion.type === 'multiple_choice'
+                      ? 'Pilihan Ganda'
+                      : previewQuestion.type === 'statement_correction'
+                      ? 'Pernyataan Benar / Salah + Koreksi'
+                      : previewQuestion.type === 'multi_part'
+                      ? 'Soal 2 Pertanyaan (Multi Part)'
+                      : 'Jawaban Singkat'}
+                  </h3>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewQuestion(null)}
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content Preview */}
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-slate-950/70 border border-white/10 space-y-2">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  Kategori: {previewQuestion.category || 'Pengukuran Fisika'} • {previewQuestion.points || 10} Poin
+                </span>
+                <p className="text-base font-semibold text-white leading-relaxed">
+                  {previewQuestion.questionText}
+                </p>
+              </div>
+
+              {/* Multiple Choice Preview */}
+              {previewQuestion.type === 'multiple_choice' && previewQuestion.options && (
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-slate-400 uppercase">Pilihan Jawaban:</span>
+                  <div className="space-y-2">
+                    {previewQuestion.options.map((opt) => {
+                      const isCorrect = previewQuestion.correctOptionId === opt.id;
+                      return (
+                        <div
+                          key={opt.id}
+                          className={`p-3 rounded-xl border flex items-center justify-between ${
+                            isCorrect
+                              ? 'bg-purple-500/20 border-purple-400/60 text-purple-200 font-bold'
+                              : 'bg-slate-950/40 border-white/10 text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="w-6 h-6 rounded-md bg-white/10 flex items-center justify-center font-bold text-xs">
+                              {opt.label}
+                            </span>
+                            <span>{opt.text}</span>
+                          </div>
+                          {isCorrect && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded bg-purple-500 text-white">
+                              KUNCI
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Statement Correction Preview */}
+              {previewQuestion.type === 'statement_correction' && (
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-400/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-amber-300 uppercase">Status Pernyataan:</span>
+                    <span
+                      className={`px-2.5 py-1 rounded-lg text-xs font-black uppercase ${
+                        previewQuestion.statementConfig?.isTrue
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'bg-rose-500 text-white'
+                      }`}
+                    >
+                      {previewQuestion.statementConfig?.isTrue ? 'BENAR' : 'SALAH'}
+                    </span>
+                  </div>
+                  {!previewQuestion.statementConfig?.isTrue && (
+                    <div className="pt-2 border-t border-amber-400/20 text-xs">
+                      <span className="text-slate-400">Kunci Koreksi: </span>
+                      <strong className="text-amber-200 font-mono">
+                        {previewQuestion.statementConfig?.correctionKey}
+                      </strong>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Multi-Part Preview */}
+              {previewQuestion.type === 'multi_part' && previewQuestion.multiPartConfig && (
+                <div className="space-y-2.5">
+                  <span className="text-xs font-bold text-slate-400 uppercase">
+                    Sub-Pertanyaan ({previewQuestion.multiPartConfig.parts.length}):
+                  </span>
+                  <div className="space-y-2">
+                    {previewQuestion.multiPartConfig.parts.map((part, idx) => (
+                      <div key={part.id} className="p-3 rounded-xl bg-slate-950 border border-emerald-400/30 space-y-1">
+                        <p className="text-xs font-bold text-white">
+                          #{idx + 1}: {part.question}
+                        </p>
+                        <p className="text-xs text-emerald-300 font-mono">
+                          Kunci: <strong>{part.correctAnswer}</strong>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Short Answer Preview */}
+              {(!previewQuestion.type || previewQuestion.type === 'short_answer') && (
+                <div className="p-3.5 rounded-xl bg-cyan-500/10 border border-cyan-400/30 flex items-center justify-between">
+                  <span className="text-xs text-slate-300">Kunci Jawaban:</span>
+                  <span className="px-3 py-1 rounded-lg bg-cyan-500/20 text-cyan-300 font-mono font-bold text-sm">
+                    {previewQuestion.correctAnswer}
+                  </span>
+                </div>
+              )}
+
+              {/* Explanation */}
+              {previewQuestion.explanation && (
+                <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-300">
+                  <span className="font-bold text-slate-400 block mb-0.5">Pembahasan:</span>
+                  {previewQuestion.explanation}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setPreviewQuestion(null)}
+                className="px-5 py-2.5 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs uppercase cursor-pointer"
+              >
+                Tutup Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 7. MODAL KONFIRMASI MUAT DATA DEMO */}
       {/* ========================================================= */}
       {showDemoConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
@@ -1974,7 +2859,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <br />
                 • <strong className="text-cyan-300">4 Kelompok</strong> (ALPHA, BRAVO, CHARLIE, DELTA)
                 <br />
-                • <strong className="text-cyan-300">10 Soal Contoh</strong> Pengukuran Fisika & Matematika
+                • <strong className="text-cyan-300">10 Soal Lengkap</strong> (Jawaban Singkat, Pilihan Ganda, B/S Koreksi, Multi-Part)
                 <br />
                 • <strong className="text-cyan-300">Durasi 5 Menit</strong> & 10 Poin per soal
               </p>
@@ -2001,7 +2886,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       )}
 
       {/* ========================================================= */}
-      {/* 7. MODAL KONFIRMASI RESET MATCH */}
+      {/* 8. MODAL KONFIRMASI RESET MATCH */}
       {/* ========================================================= */}
       {showResetConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">

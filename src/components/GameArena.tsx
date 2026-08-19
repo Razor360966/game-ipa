@@ -51,6 +51,10 @@ export const GameArena: React.FC<GameArenaProps> = ({
   } = gameState;
 
   const [inputAnswer, setInputAnswer] = useState('');
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
+  const [statementChoice, setStatementChoice] = useState<boolean | null>(null);
+  const [correctionInput, setCorrectionInput] = useState('');
+  const [multiPartAnswers, setMultiPartAnswers] = useState<string[]>(['', '', '', '']);
   const [lockoutNotice, setLockoutNotice] = useState<string | null>(null);
   const [showEndGameConfirm, setShowEndGameConfirm] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -105,11 +109,17 @@ export const GameArena: React.FC<GameArenaProps> = ({
     );
   }, [selectedCard, questions]);
 
-  // Auto-focus input when card is selected
+  // Auto-focus and reset inputs when card is selected
   useEffect(() => {
-    if (activeQuestionIndex !== null && inputRef.current) {
-      inputRef.current.focus();
+    if (activeQuestionIndex !== null) {
       setInputAnswer('');
+      setSelectedOptionId(null);
+      setStatementChoice(null);
+      setCorrectionInput('');
+      setMultiPartAnswers(['', '', '', '']);
+      if (inputRef.current) {
+        setTimeout(() => inputRef.current?.focus(), 50);
+      }
     }
   }, [activeQuestionIndex]);
 
@@ -159,8 +169,29 @@ export const GameArena: React.FC<GameArenaProps> = ({
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!inputAnswer.trim() || activeQuestionIndex === null) return;
-    onSubmitAnswer(activeQuestionIndex, inputAnswer.trim());
+    if (activeQuestionIndex === null || !selectedQuestion) return;
+
+    const qType = selectedQuestion.type || 'short_answer';
+
+    if (qType === 'multiple_choice') {
+      if (!selectedOptionId) return;
+      onSubmitAnswer(activeQuestionIndex, selectedOptionId);
+    } else if (qType === 'statement_correction') {
+      if (statementChoice === null) return;
+      const payload = JSON.stringify({
+        isTrue: statementChoice,
+        correctionText: statementChoice ? '' : correctionInput.trim(),
+      });
+      onSubmitAnswer(activeQuestionIndex, payload);
+    } else if (qType === 'multi_part') {
+      const partsCount = selectedQuestion.multiPartConfig?.parts?.length || 2;
+      const answersToSubmit = multiPartAnswers.slice(0, partsCount).map((a) => a.trim());
+      if (answersToSubmit.some((a) => !a)) return;
+      onSubmitAnswer(activeQuestionIndex, JSON.stringify(answersToSubmit));
+    } else {
+      if (!inputAnswer.trim()) return;
+      onSubmitAnswer(activeQuestionIndex, inputAnswer.trim());
+    }
   };
 
   // -------------------------------------------------------------
@@ -168,6 +199,25 @@ export const GameArena: React.FC<GameArenaProps> = ({
   // -------------------------------------------------------------
   if (lastEvaluation) {
     const evalTeam = teams.find((t) => t.id === lastEvaluation.teamId);
+
+    let displaySubmittedAnswer = lastEvaluation.submittedAnswer;
+    try {
+      if (displaySubmittedAnswer.startsWith('{') && displaySubmittedAnswer.endsWith('}')) {
+        const parsed = JSON.parse(displaySubmittedAnswer);
+        if (typeof parsed.isTrue === 'boolean') {
+          displaySubmittedAnswer = `${parsed.isTrue ? 'BENAR' : 'SALAH'}${
+            parsed.correctionText ? ` (Koreksi: ${parsed.correctionText})` : ''
+          }`;
+        }
+      } else if (displaySubmittedAnswer.startsWith('[') && displaySubmittedAnswer.endsWith(']')) {
+        const parsed = JSON.parse(displaySubmittedAnswer);
+        if (Array.isArray(parsed)) {
+          displaySubmittedAnswer = parsed.map((p, idx) => `[#${idx + 1}] ${p}`).join(' | ');
+        }
+      }
+    } catch {
+      // Keep raw string
+    }
 
     return (
       <div className="flex-1 flex items-center justify-center p-4 sm:p-8 animate-in fade-in zoom-in duration-200">
@@ -223,7 +273,7 @@ export const GameArena: React.FC<GameArenaProps> = ({
           <div className="mt-6 p-4 rounded-2xl bg-white/5 border border-white/10 text-left text-xs sm:text-sm space-y-1.5 max-w-md mx-auto backdrop-blur-md">
             <div className="flex justify-between text-slate-400">
               <span>Jawaban Dikirim:</span>
-              <span className="font-mono font-bold text-white">"{lastEvaluation.submittedAnswer}"</span>
+              <span className="font-mono font-bold text-white">"{displaySubmittedAnswer}"</span>
             </div>
             <div className="flex justify-between text-slate-400">
               <span>Status Giliran:</span>
@@ -303,11 +353,34 @@ export const GameArena: React.FC<GameArenaProps> = ({
               <HelpCircle className="w-4 h-4" />
               KONFIRMASI SOAL PADA KARTU #{String(selectedCard.cardNumber).padStart(2, '0')}
             </div>
-            {selectedQuestion.category && (
-              <span className="text-[11px] px-3 py-0.5 rounded-full bg-white/5 text-slate-300 border border-white/10 backdrop-blur-md">
-                {selectedQuestion.category}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {/* Type badge */}
+              {selectedQuestion.type === 'multiple_choice' && (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold">
+                  Pilihan Ganda
+                </span>
+              )}
+              {selectedQuestion.type === 'statement_correction' && (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
+                  Benar / Salah + Koreksi
+                </span>
+              )}
+              {selectedQuestion.type === 'multi_part' && (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+                  2 Pertanyaan Terkait
+                </span>
+              )}
+              {(!selectedQuestion.type || selectedQuestion.type === 'short_answer') && (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 font-bold">
+                  Isian Singkat
+                </span>
+              )}
+              {selectedQuestion.category && (
+                <span className="text-[11px] px-3 py-0.5 rounded-full bg-white/5 text-slate-300 border border-white/10 backdrop-blur-md">
+                  {selectedQuestion.category}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Question Text */}
@@ -322,102 +395,318 @@ export const GameArena: React.FC<GameArenaProps> = ({
             )}
           </div>
 
-          {/* Answer Input Form */}
+          {/* Dynamic Answer Input Form based on Question Type */}
           <form onSubmit={handleSubmit} className="mt-8 space-y-6">
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <label
-                  htmlFor="input-student-answer"
-                  className="block text-xs font-bold text-slate-400 uppercase tracking-wider"
-                >
-                  Masukkan Jawaban Kelompokmu:
+            {/* TYPE 1: MULTIPLE CHOICE */}
+            {selectedQuestion.type === 'multiple_choice' && (
+              <div className="space-y-4">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Pilih Salah Satu Opsi Jawaban:
                 </label>
-                <span className="text-[11px] text-cyan-400 font-medium">
-                  Ketik atau tekan tombol bantuan di bawah
-                </span>
-              </div>
 
-              <div className="relative">
-                <input
-                  ref={inputRef}
-                  id="input-student-answer"
-                  type="text"
-                  value={inputAnswer}
-                  onChange={(e) => setInputAnswer(e.target.value)}
-                  placeholder="Ketik jawaban di sini (contoh: 250 cm)..."
-                  autoComplete="off"
-                  className="w-full bg-slate-950/70 border-2 border-white/20 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-500/20 rounded-2xl px-6 py-4 text-xl sm:text-2xl font-bold text-white placeholder:text-slate-600 outline-none transition-all backdrop-blur-md"
-                />
-                {inputAnswer && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  {(selectedQuestion.options && selectedQuestion.options.length > 0
+                    ? selectedQuestion.options
+                    : [
+                        { id: 'A', label: 'A', text: 'Opsi A' },
+                        { id: 'B', label: 'B', text: 'Opsi B' },
+                        { id: 'C', label: 'C', text: 'Opsi C' },
+                        { id: 'D', label: 'D', text: 'Opsi D' },
+                      ]
+                  ).map((opt) => {
+                    const isSelected = selectedOptionId === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        id={`btn-option-${opt.id}`}
+                        onClick={() => {
+                          sound.playClick();
+                          setSelectedOptionId(opt.id);
+                        }}
+                        className={`p-4 rounded-2xl border-2 text-left flex items-start gap-3.5 transition-all cursor-pointer backdrop-blur-md ${
+                          isSelected
+                            ? 'bg-cyan-500/20 border-cyan-400 shadow-[0_0_25px_rgba(34,211,238,0.3)] ring-2 ring-cyan-400/50 scale-[1.02]'
+                            : 'bg-white/5 border-white/10 hover:border-white/20 hover:bg-white/10 text-slate-200'
+                        }`}
+                      >
+                        <div
+                          className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center font-black text-sm transition-all ${
+                            isSelected
+                              ? 'bg-cyan-400 text-slate-950 shadow-md font-bold'
+                              : 'bg-white/10 text-white border border-white/10'
+                          }`}
+                        >
+                          {opt.label || opt.id}
+                        </div>
+                        <div className="flex-1 pt-1">
+                          <p className={`text-base font-semibold leading-snug ${isSelected ? 'text-cyan-200' : 'text-white'}`}>
+                            {opt.text}
+                          </p>
+                        </div>
+                        <div className="pt-1">
+                          {isSelected && (
+                            <div className="w-5 h-5 rounded-full bg-cyan-400 text-slate-950 flex items-center justify-center">
+                              <CheckCircle2 className="w-4 h-4" />
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* TYPE 2: STATEMENT CORRECTION (BENAR / SALAH + KOREKSI) */}
+            {selectedQuestion.type === 'statement_correction' && (
+              <div className="space-y-6">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Tentukan Kebenaran Pernyataan di Atas:
+                </label>
+
+                {/* 2 Big Choice Buttons */}
+                <div className="grid grid-cols-2 gap-4">
                   <button
                     type="button"
-                    onClick={() => {
-                      setInputAnswer('');
-                      if (inputRef.current) inputRef.current.focus();
-                    }}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white cursor-pointer"
-                    title="Hapus Jawaban"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-
-              {/* Quick Touch Virtual Helper Buttons for Fast Answering */}
-              <div className="mt-3 space-y-2">
-                {/* Numeric Keys */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Angka:</span>
-                  {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', ',', '.'].map((key) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => {
-                        sound.playClick();
-                        setInputAnswer((prev) => prev + key);
-                        if (inputRef.current) inputRef.current.focus();
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-cyan-500/20 border border-white/10 hover:border-cyan-400/40 text-slate-200 hover:text-cyan-300 text-xs font-mono font-bold transition-all cursor-pointer active:scale-95"
-                    >
-                      {key}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
+                    id="btn-statement-benar"
                     onClick={() => {
                       sound.playClick();
-                      setInputAnswer((prev) => prev.slice(0, -1));
-                      if (inputRef.current) inputRef.current.focus();
+                      setStatementChoice(true);
                     }}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-bold transition-all cursor-pointer active:scale-95"
+                    className={`p-5 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all cursor-pointer ${
+                      statementChoice === true
+                        ? 'bg-emerald-500/25 border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.4)] text-emerald-300 ring-2 ring-emerald-400/50 scale-[1.02]'
+                        : 'bg-white/5 border-white/10 text-slate-300 hover:bg-emerald-500/10 hover:border-emerald-500/30'
+                    }`}
                   >
-                    ⌫ Hapus
+                    <CheckCircle2 className={`w-8 h-8 ${statementChoice === true ? 'text-emerald-400 animate-bounce' : 'text-slate-400'}`} />
+                    <span className="text-xl font-black tracking-wider uppercase">BENAR</span>
+                    <span className="text-[11px] text-slate-400 font-medium">Pernyataan sudah tepat</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    id="btn-statement-salah"
+                    onClick={() => {
+                      sound.playClick();
+                      setStatementChoice(false);
+                      setTimeout(() => inputRef.current?.focus(), 50);
+                    }}
+                    className={`p-5 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all cursor-pointer ${
+                      statementChoice === false
+                        ? 'bg-rose-500/25 border-rose-400 shadow-[0_0_30px_rgba(244,63,94,0.4)] text-rose-300 ring-2 ring-rose-400/50 scale-[1.02]'
+                        : 'bg-white/5 border-white/10 text-slate-300 hover:bg-rose-500/10 hover:border-rose-500/30'
+                    }`}
+                  >
+                    <XCircle className={`w-8 h-8 ${statementChoice === false ? 'text-rose-400 animate-pulse' : 'text-slate-400'}`} />
+                    <span className="text-xl font-black tracking-wider uppercase">SALAH</span>
+                    <span className="text-[11px] text-slate-400 font-medium">Perlu dikoreksi</span>
                   </button>
                 </div>
 
-                {/* Common Units Quick Fill */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Satuan:</span>
-                  {['cm', 'meter', 'gram', 'kg', 'detik', 'menit', 'cm³', 'km/jam', 'Kelvin'].map((unit) => (
+                {/* Conditional Correction Input when False is Selected */}
+                {statementChoice === false && (
+                  <div className="p-5 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-center justify-between">
+                      <label htmlFor="input-correction-text" className="block text-xs font-bold text-rose-300 uppercase tracking-wider">
+                        ✍️ Tuliskan Koreksi / Pembetulan yang Benar:
+                      </label>
+                      <span className="text-[11px] text-slate-400">Wajib diisi jika memilih SALAH</span>
+                    </div>
+
+                    <div className="relative">
+                      <input
+                        ref={inputRef}
+                        id="input-correction-text"
+                        type="text"
+                        value={correctionInput}
+                        onChange={(e) => setCorrectionInput(e.target.value)}
+                        placeholder="Tuliskan nilai / satuan / konsep yang benar..."
+                        autoComplete="off"
+                        className="w-full bg-slate-950/80 border-2 border-rose-500/40 focus:border-rose-400 focus:ring-4 focus:ring-rose-500/20 rounded-2xl px-5 py-3.5 text-lg font-bold text-white placeholder:text-slate-600 outline-none transition-all"
+                      />
+                      {correctionInput && (
+                        <button
+                          type="button"
+                          onClick={() => setCorrectionInput('')}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300"
+                        >
+                          <RotateCcw className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Quick helper keypad for correction */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Angka:</span>
+                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', ',', '.'].map((key) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setCorrectionInput((prev) => prev + key)}
+                          className="px-2 py-0.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 text-xs font-mono font-bold cursor-pointer"
+                        >
+                          {key}
+                        </button>
+                      ))}
+                      {['cm', 'meter', 'gram', 'kg', 'detik', 'menit', 'cm³'].map((unit) => (
+                        <button
+                          key={unit}
+                          type="button"
+                          onClick={() => setCorrectionInput((prev) => prev.trim() ? `${prev.trim()} ${unit}` : unit)}
+                          className="px-2 py-0.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-[11px] font-bold cursor-pointer"
+                        >
+                          +{unit}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TYPE 3: MULTI-PART (2 SUB-PERTANYAAN) */}
+            {selectedQuestion.type === 'multi_part' && (
+              <div className="space-y-5">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Jawab Seluruh Pertanyaan Berikut:
+                </label>
+
+                {(selectedQuestion.multiPartConfig?.parts || [
+                  { id: 'p1', question: 'Pertanyaan Bagian 1' },
+                  { id: 'p2', question: 'Pertanyaan Bagian 2' },
+                ]).map((part, idx) => (
+                  <div key={part.id || idx} className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2.5 backdrop-blur-md">
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-black text-xs flex items-center justify-center">
+                        #{idx + 1}
+                      </span>
+                      <p className="text-sm sm:text-base font-bold text-white">
+                        {part.question}
+                      </p>
+                    </div>
+
+                    <div className="relative">
+                      <input
+                        id={`input-multipart-${idx}`}
+                        type="text"
+                        value={multiPartAnswers[idx] || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setMultiPartAnswers((prev) => {
+                            const next = [...prev];
+                            next[idx] = val;
+                            return next;
+                          });
+                        }}
+                        placeholder={`Jawaban untuk bagian #${idx + 1}...`}
+                        autoComplete="off"
+                        className="w-full bg-slate-950/70 border-2 border-white/20 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/20 rounded-xl px-4 py-3 text-base font-bold text-white placeholder:text-slate-600 outline-none transition-all"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* TYPE 4: SHORT ANSWER (DEFAULT ISIAN SINGKAT) */}
+            {(!selectedQuestion.type || selectedQuestion.type === 'short_answer') && (
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label
+                    htmlFor="input-student-answer"
+                    className="block text-xs font-bold text-slate-400 uppercase tracking-wider"
+                  >
+                    Masukkan Jawaban Kelompokmu:
+                  </label>
+                  <span className="text-[11px] text-cyan-400 font-medium">
+                    Ketik atau tekan tombol bantuan di bawah
+                  </span>
+                </div>
+
+                <div className="relative">
+                  <input
+                    ref={inputRef}
+                    id="input-student-answer"
+                    type="text"
+                    value={inputAnswer}
+                    onChange={(e) => setInputAnswer(e.target.value)}
+                    placeholder="Ketik jawaban di sini (contoh: 250 cm)..."
+                    autoComplete="off"
+                    className="w-full bg-slate-950/70 border-2 border-white/20 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-500/20 rounded-2xl px-6 py-4 text-xl sm:text-2xl font-bold text-white placeholder:text-slate-600 outline-none transition-all backdrop-blur-md"
+                  />
+                  {inputAnswer && (
                     <button
-                      key={unit}
+                      type="button"
+                      onClick={() => {
+                        setInputAnswer('');
+                        if (inputRef.current) inputRef.current.focus();
+                      }}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white cursor-pointer"
+                      title="Hapus Jawaban"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick Touch Virtual Helper Buttons for Fast Answering */}
+                <div className="mt-3 space-y-2">
+                  {/* Numeric Keys */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Angka:</span>
+                    {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', ',', '.'].map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          sound.playClick();
+                          setInputAnswer((prev) => prev + key);
+                          if (inputRef.current) inputRef.current.focus();
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-cyan-500/20 border border-white/10 hover:border-cyan-400/40 text-slate-200 hover:text-cyan-300 text-xs font-mono font-bold transition-all cursor-pointer active:scale-95"
+                      >
+                        {key}
+                      </button>
+                    ))}
+                    <button
                       type="button"
                       onClick={() => {
                         sound.playClick();
-                        setInputAnswer((prev) => {
-                          const trimmed = prev.trim();
-                          return trimmed ? `${trimmed} ${unit}` : unit;
-                        });
+                        setInputAnswer((prev) => prev.slice(0, -1));
                         if (inputRef.current) inputRef.current.focus();
                       }}
-                      className="px-2.5 py-0.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/20 hover:border-cyan-400/50 text-cyan-300 text-[11px] font-bold transition-all cursor-pointer active:scale-95"
+                      className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-bold transition-all cursor-pointer active:scale-95"
                     >
-                      +{unit}
+                      ⌫ Hapus
                     </button>
-                  ))}
+                  </div>
+
+                  {/* Common Units Quick Fill */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Satuan:</span>
+                    {['cm', 'meter', 'gram', 'kg', 'detik', 'menit', 'cm³', 'km/jam', 'Kelvin'].map((unit) => (
+                      <button
+                        key={unit}
+                        type="button"
+                        onClick={() => {
+                          sound.playClick();
+                          setInputAnswer((prev) => {
+                            const trimmed = prev.trim();
+                            return trimmed ? `${trimmed} ${unit}` : unit;
+                          });
+                          if (inputRef.current) inputRef.current.focus();
+                        }}
+                        className="px-2.5 py-0.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/20 hover:border-cyan-400/50 text-cyan-300 text-[11px] font-bold transition-all cursor-pointer active:scale-95"
+                      >
+                        +{unit}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {/* Quick Virtual Pad / Submit Button */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
@@ -432,9 +721,23 @@ export const GameArena: React.FC<GameArenaProps> = ({
               <button
                 id="btn-submit-answer"
                 type="submit"
-                disabled={!inputAnswer.trim()}
+                disabled={
+                  selectedQuestion.type === 'multiple_choice'
+                    ? !selectedOptionId
+                    : selectedQuestion.type === 'statement_correction'
+                    ? statementChoice === null || (statementChoice === false && !correctionInput.trim())
+                    : selectedQuestion.type === 'multi_part'
+                    ? !(selectedQuestion.multiPartConfig?.parts || [1, 2]).every((_, idx) => (multiPartAnswers[idx] || '').trim().length > 0)
+                    : !inputAnswer.trim()
+                }
                 className={`w-full sm:w-auto px-10 py-4 rounded-2xl font-black text-base sm:text-lg tracking-wider uppercase flex items-center justify-center gap-2 transition-all ${
-                  inputAnswer.trim()
+                  (selectedQuestion.type === 'multiple_choice'
+                    ? Boolean(selectedOptionId)
+                    : selectedQuestion.type === 'statement_correction'
+                    ? statementChoice === true || (statementChoice === false && Boolean(correctionInput.trim()))
+                    : selectedQuestion.type === 'multi_part'
+                    ? (selectedQuestion.multiPartConfig?.parts || [1, 2]).every((_, idx) => (multiPartAnswers[idx] || '').trim().length > 0)
+                    : Boolean(inputAnswer.trim()))
                     ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-[0_0_30px_rgba(16,185,129,0.4)] hover:scale-105 active:scale-95 cursor-pointer'
                     : 'bg-white/5 text-slate-500 border border-white/5 cursor-not-allowed'
                 }`}

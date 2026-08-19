@@ -249,7 +249,12 @@ export default function App() {
 
     const evalResult = checkAnswer(submittedAnswer, question, gameState.settings.caseSensitive);
     const isCorrect = evalResult.isCorrect;
-    const pointsAwarded = isCorrect ? question.points || gameState.settings.pointsPerCorrect : 0;
+    const pointsAwarded =
+      typeof evalResult.scoreEarned === 'number'
+        ? evalResult.scoreEarned
+        : isCorrect
+        ? question.points || gameState.settings.pointsPerCorrect
+        : 0;
 
     const now = Date.now();
     const timeFormatted = new Date(now).toLocaleTimeString('id-ID');
