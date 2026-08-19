@@ -1,0 +1,6 @@
+{
+  "name": "Measurement Block Blast",
+  "description": "Aplikasi kompetisi cepat-tepat kartu soal antarkelompok dengan sistem siapa cepat dia dapat, buzzer lock, evaluasi otomatis, cetak kartu soal, dan live scoreboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
