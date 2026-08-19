@@ -18,3 +18,4 @@ View your app in AI Studio: https://ai.studio/apps/ec6d1f63-60ff-43b2-b51e-1e94d
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+# https---github.com-Razor360966-Game-IPA-Alkarim-Rasyid
