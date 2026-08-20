@@ -2115,7 +2115,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase flex items-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all hover:scale-105 active:scale-95 cursor-pointer"
                   >
                     <Printer className="w-4 h-4" />
-                    Cetak Semua Kartu
+                    Cetak Lembar Soal A4 ({teams.length} Lembar)
                   </button>
                 </div>
               </div>
