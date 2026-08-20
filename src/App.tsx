@@ -374,22 +374,46 @@ export default function App() {
   };
 
   const handleUpdateTeams = (newTeams: Team[]) => {
-    setGameState((prev) => ({
-      ...prev,
-      teams: newTeams,
-    }));
+    setGameState((prev) => {
+      const isMatchStarted =
+        prev.status === 'running' ||
+        prev.status === 'paused' ||
+        prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
+
+      const newDecks = !isMatchStarted
+        ? generateTeamCardDecks(newTeams, prev.questions, prev.questions.length, true)
+        : prev.teamCardDecks;
+
+      return {
+        ...prev,
+        teams: newTeams,
+        teamCardDecks: newDecks,
+      };
+    });
   };
 
   const handleUpdateQuestions = (newQuestions: Question[]) => {
-    setGameState((prev) => ({
-      ...prev,
-      questions: newQuestions,
-    }));
+    setGameState((prev) => {
+      const isMatchStarted =
+        prev.status === 'running' ||
+        prev.status === 'paused' ||
+        prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
+
+      const newDecks = !isMatchStarted
+        ? generateTeamCardDecks(prev.teams, newQuestions, newQuestions.length, true)
+        : prev.teamCardDecks;
+
+      return {
+        ...prev,
+        questions: newQuestions,
+        teamCardDecks: newDecks,
+      };
+    });
   };
 
-  const handleRegenerateDecks = (cardsPerTeam: number, randomized: boolean) => {
+  const handleRegenerateDecks = (_cardsPerTeam?: number, randomized: boolean = true) => {
     setGameState((prev) => {
-      const newDecks = generateTeamCardDecks(prev.teams, prev.questions, cardsPerTeam, randomized);
+      const newDecks = generateTeamCardDecks(prev.teams, prev.questions, prev.questions.length, randomized);
       return {
         ...prev,
         teamCardDecks: newDecks,
@@ -628,7 +652,12 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'print' && <PrintableCards gameState={gameState} />}
+        {activeTab === 'print' && (
+          <PrintableCards
+            gameState={gameState}
+            onBackToAdmin={() => setActiveTab('admin')}
+          />
+        )}
       </main>
 
       {/* Frosted Glass Footer Status Bar */}

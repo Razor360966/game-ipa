@@ -14,6 +14,7 @@ import {
   Edit3,
   Save,
   RotateCcw,
+  RefreshCw,
   Play,
   Pause,
   AlertTriangle,
@@ -54,7 +55,7 @@ import {
   MultiPartConfig,
   MultiPartItem,
 } from '../types';
-import { COLOR_MAP, DEFAULT_QUESTIONS, generateTeamCardDecks } from '../utils/presets';
+import { COLOR_MAP, DEFAULT_QUESTIONS, generateTeamCardDecks, validateDecksAndQuestions } from '../utils/presets';
 import { sound } from '../utils/sound';
 
 interface AdminDashboardProps {
@@ -172,10 +173,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [showDemoConfirm, setShowDemoConfirm] = useState(false);
   // Reset match confirmation modal
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  // Regenerate deck confirmation modal
+  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
+  // Selected team for deck preview
+  const [previewTeamId, setPreviewTeamId] = useState<string>('all');
 
   // Card deck generator settings
   const [cardsCountPerTeam, setCardsCountPerTeam] = useState<number>(10);
   const [isRandomized, setIsRandomized] = useState<boolean>(true);
+
+  // Check if match has already started or has active progress
+  const isMatchStarted = useMemo(() => {
+    const decks = gameState.teamCardDecks || {};
+    return (
+      gameStatus === 'running' ||
+      gameStatus === 'paused' ||
+      gameStatus === 'finished' ||
+      teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0) || (t.wrongCount && t.wrongCount > 0)) ||
+      Object.keys(decks).some((teamId) => {
+        const teamDeck = decks[teamId] || [];
+        return teamDeck.some((card) => card.status !== 'unanswered' || (card.attempts && card.attempts > 0));
+      })
+    );
+  }, [gameStatus, teams, gameState.teamCardDecks]);
+
+  // Validate Question Bank and Team Decks
+  const deckValidation = useMemo(() => {
+    return validateDecksAndQuestions(teams, questions, gameState.teamCardDecks || {});
+  }, [teams, questions, gameState.teamCardDecks]);
 
   // Feedback Notification Banner
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -2039,45 +2064,307 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* ------------------------------------------------------------- */}
           {activeTab === 'decks' && (
             <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-3xl p-6 shadow-xl space-y-6 animate-in fade-in duration-200">
+              {/* Header */}
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
                 <div>
-                  <h2 className="text-xl font-bold text-white uppercase tracking-wider">
-                    DECK KARTU SOAL PER KELOMPOK
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/20 border border-cyan-400/40 text-cyan-300 text-xs font-bold tracking-wider uppercase backdrop-blur-md mb-1.5">
+                    <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                    MANAJEMEN KARTU SOAL & URUTAN ACAK
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black text-white uppercase tracking-tight">
+                    MAPPING KARTU SOAL PER KELOMPOK
                   </h2>
-                  <p className="text-xs text-slate-400">
-                    Generate pembagian nomor kartu soal fisik untuk setiap kelompok
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Setiap kelompok mendapatkan seluruh soal di Bank Soal ({questions.length} soal) dalam urutan acak yang unik.
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (onOpenPrint) onOpenPrint();
-                  }}
-                  className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs uppercase flex items-center gap-2 cursor-pointer"
-                >
-                  <Printer className="w-4 h-4" />
-                  Buka Halaman Cetak
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Generate Ulang Button */}
+                  <button
+                    id="btn-trigger-regenerate-decks"
+                    type="button"
+                    onClick={() => {
+                      if (isMatchStarted) {
+                        showToast('Urutan soal tidak dapat diubah setelah pertandingan dimulai.', 'error');
+                        sound.playWrong();
+                        return;
+                      }
+                      sound.playClick();
+                      setShowRegenerateConfirm(true);
+                    }}
+                    disabled={isMatchStarted}
+                    className={`px-4 py-2.5 rounded-xl font-bold text-xs uppercase flex items-center gap-2 transition-all ${
+                      isMatchStarted
+                        ? 'bg-white/5 text-slate-500 border border-white/10 cursor-not-allowed'
+                        : 'bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-400/40 cursor-pointer active:scale-95'
+                    }`}
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    {isMatchStarted ? 'Urutan Terkunci' : 'Generate Ulang Urutan'}
+                  </button>
+
+                  {/* Cetak Button */}
+                  <button
+                    id="btn-open-printable-cards"
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      if (onOpenPrint) onOpenPrint();
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs uppercase flex items-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all hover:scale-105 active:scale-95 cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Cetak Semua Kartu
+                  </button>
+                </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-slate-950/50 border border-white/10 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-bold text-white">Acak Urutan Soal Tiap Kelompok</p>
-                  <p className="text-xs text-slate-400">
-                    Mencegah kelompok melihat jawaban kelompok lain karena nomor soal diacak per kelompok
-                  </p>
+              {/* STATISTIK RINGKASAN */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5">
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-white/10">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block tracking-wider">Bank Soal</span>
+                  <span className="text-2xl font-black text-cyan-400">{deckValidation.questionsCount} Soal</span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Sumber master soal</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onRegenerateDecks(10, true);
-                    showToast('Deck kartu soal berhasil diacak ulang!');
-                  }}
-                  className="px-4 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 text-xs font-bold cursor-pointer"
+
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-white/10">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block tracking-wider">Jumlah Kelompok</span>
+                  <span className="text-2xl font-black text-emerald-400">{deckValidation.teamsCount} Kelompok</span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Semua dapat soal lengkap</span>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-white/10">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block tracking-wider">Total Kartu Fisik</span>
+                  <span className="text-2xl font-black text-amber-400">
+                    {deckValidation.totalCards} Kartu
+                  </span>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                    {deckValidation.questionsCount} soal × {deckValidation.teamsCount} kelompok
+                  </span>
+                </div>
+
+                <div
+                  className={`p-4 rounded-2xl border flex flex-col justify-between ${
+                    deckValidation.isValid
+                      ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                      : 'bg-rose-500/15 border-rose-400/40 text-rose-200'
+                  }`}
                 >
-                  Acak Ulang Sekarang
-                </button>
+                  <div className="flex items-center gap-2">
+                    {deckValidation.isValid ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+                    )}
+                    <span className="text-xs font-black uppercase tracking-wider">
+                      {deckValidation.isValid ? 'Status Valid' : 'Perlu Validasi'}
+                    </span>
+                  </div>
+                  <span className="text-[11px] opacity-85 mt-1">
+                    {deckValidation.isValid
+                      ? 'Semua kelompok memiliki seluruh soal unik.'
+                      : `${deckValidation.errors.length} masalah ditemukan.`}
+                  </span>
+                </div>
+              </div>
+
+              {/* Match Started Notice */}
+              {isMatchStarted && (
+                <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-400/40 text-amber-200 text-xs flex items-center gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+                  <div>
+                    <span className="font-bold block uppercase tracking-wider text-amber-300">
+                      Pertandingan Sedang Berjalan / Memiliki Progres
+                    </span>
+                    <span className="opacity-90">
+                      Urutan kartu soal tidak dapat diubah setelah pertandingan dimulai demi integritas data dan penilaian.
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Validation Errors Notice */}
+              {!deckValidation.isValid && (
+                <div className="p-4 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-bold uppercase tracking-wider text-rose-300">
+                      <AlertTriangle className="w-4 h-4 text-rose-400" />
+                      <span>Masalah Ditemukan Pada Mapping Kartu:</span>
+                    </div>
+                    {!isMatchStarted && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRegenerateDecks(questions.length, true);
+                          showToast('Mapping kartu soal berhasil diperbaiki!');
+                        }}
+                        className="px-3 py-1 rounded-lg bg-rose-500 hover:bg-rose-400 text-white font-bold text-[11px] cursor-pointer"
+                      >
+                        Perbaiki & Generate Otomatis
+                      </button>
+                    )}
+                  </div>
+                  <ul className="list-disc list-inside space-y-0.5 text-[11px] pl-1 opacity-90">
+                    {deckValidation.errors.map((err, idx) => (
+                      <li key={idx}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* PREVIEW URUTAN SOAL PER KELOMPOK */}
+              <div className="space-y-4 pt-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <Eye className="w-4 h-4 text-cyan-400" />
+                      Preview Mapping Kartu Soal
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Lihat relasi Nomor Kartu Siswa ke Soal Asli di Bank Soal
+                    </p>
+                  </div>
+
+                  {/* Team Filter Pills */}
+                  <div className="flex flex-wrap items-center gap-1.5 bg-slate-950/70 p-1 rounded-xl border border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewTeamId('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        previewTeamId === 'all'
+                          ? 'bg-cyan-500 text-slate-950 shadow-md font-black'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Semua Kelompok
+                    </button>
+                    {teams.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setPreviewTeamId(t.id)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          previewTeamId === t.id
+                            ? 'bg-cyan-500 text-slate-950 shadow-md font-black'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {t.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Table Per Team */}
+                <div className="space-y-5">
+                  {(previewTeamId === 'all' ? teams : teams.filter((t) => t.id === previewTeamId)).map((team) => {
+                    const deck = gameState.teamCardDecks[team.id] || [];
+
+                    return (
+                      <div
+                        key={team.id}
+                        className="bg-slate-950/50 border border-white/10 rounded-2xl p-4 sm:p-5 space-y-3"
+                      >
+                        <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                          <div className="flex items-center gap-3">
+                            <span
+                              className="w-3.5 h-3.5 rounded-full shadow-[0_0_10px_currentColor]"
+                              style={{ backgroundColor: COLOR_MAP[team.color]?.glow || '#06b6d4' }}
+                            />
+                            <h4 className="text-base font-black text-white uppercase tracking-wider">
+                              KELOMPOK {team.name}
+                            </h4>
+                            <span className="text-xs font-mono font-bold text-slate-400 bg-white/5 px-2.5 py-0.5 rounded-md">
+                              {deck.length} Kartu Soal
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-slate-400 font-medium">
+                            Skor: <strong className="text-cyan-300">{team.score || 0}</strong> • Benar:{' '}
+                            <strong className="text-emerald-400">{team.correctCount || 0}</strong>
+                          </span>
+                        </div>
+
+                        {deck.length === 0 ? (
+                          <p className="text-xs text-slate-500 italic py-2">
+                            Belum ada deck kartu soal untuk kelompok ini.
+                          </p>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs border-collapse">
+                              <thead>
+                                <tr className="border-b border-white/10 text-slate-400 uppercase text-[10px] tracking-wider">
+                                  <th className="py-2.5 px-3 font-bold w-20 text-center">No Kartu</th>
+                                  <th className="py-2.5 px-3 font-bold w-24 text-center">ID Bank Soal</th>
+                                  <th className="py-2.5 px-3 font-bold">Pertanyaan</th>
+                                  <th className="py-2.5 px-3 font-bold w-28">Jenis Soal</th>
+                                  <th className="py-2.5 px-3 font-bold w-36">Kunci Jawaban</th>
+                                  <th className="py-2.5 px-3 font-bold w-28 text-center">Status Live</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-white/5">
+                                {deck.map((card) => {
+                                  const question = questions.find((q) => q.id === card.questionId);
+                                  const formattedNum = String(card.cardNumber).padStart(2, '0');
+                                  const qType = question?.type || 'short_answer';
+
+                                  return (
+                                    <tr key={card.cardNumber} className="hover:bg-white/5 transition-colors">
+                                      <td className="py-2.5 px-3 text-center">
+                                        <span className="inline-block px-2 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300 font-mono font-black text-xs border border-cyan-400/30">
+                                          #{formattedNum}
+                                        </span>
+                                      </td>
+                                      <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-400">
+                                        {question?.code || card.questionId}
+                                      </td>
+                                      <td className="py-2.5 px-3 text-slate-200 font-medium max-w-sm">
+                                        {question ? question.questionText : <span className="text-rose-400 italic">Soal tidak ditemukan</span>}
+                                      </td>
+                                      <td className="py-2.5 px-3">
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-white/5 text-slate-300 border border-white/10">
+                                          {qType === 'short_answer'
+                                            ? 'Isian'
+                                            : qType === 'multiple_choice'
+                                            ? 'PG'
+                                            : qType === 'statement_correction'
+                                            ? 'B/S Koreksi'
+                                            : 'Multi-Part'}
+                                        </span>
+                                      </td>
+                                      <td className="py-2.5 px-3 font-bold text-emerald-400 font-mono text-[11px]">
+                                        {question?.correctAnswer || '-'}
+                                      </td>
+                                      <td className="py-2.5 px-3 text-center">
+                                        {card.status === 'correct' ? (
+                                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                                            <CheckCircle2 className="w-3 h-3" /> Benar
+                                          </span>
+                                        ) : card.status === 'wrong' ? (
+                                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/30">
+                                            <XCircle className="w-3 h-3" /> Salah
+                                          </span>
+                                        ) : card.status === 'locked' ? (
+                                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30">
+                                            🔒 Terkunci
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] text-slate-500 font-medium">
+                                            Belum
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -2920,6 +3207,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="flex-1 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-black text-xs uppercase cursor-pointer"
               >
                 Reset Sekarang
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 9. MODAL KONFIRMASI GENERATE ULANG URUTAN KARTU */}
+      {/* ========================================================= */}
+      {showRegenerateConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-cyan-400/40 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 mx-auto">
+              <RefreshCw className="w-6 h-6 animate-spin-reverse" />
+            </div>
+
+            <div className="text-center">
+              <h3 className="text-lg font-bold text-white">Generate Ulang Urutan Kartu Soal?</h3>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                Tindakan ini akan mengacak ulang urutan kartu untuk semua kelompok (
+                <strong className="text-cyan-300">{teams.length} kelompok</strong> ×{' '}
+                <strong className="text-cyan-300">{questions.length} soal</strong> ={' '}
+                <strong className="text-amber-300">{teams.length * questions.length} kartu</strong>).
+              </p>
+              <div className="mt-3 p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/30 text-amber-200 text-[11px] text-left">
+                ⚠️ <strong>Perhatian:</strong> Pastikan Anda belum mencetak/membagikan kartu fisik lama kepada peserta, atau cetak kembali kartu baru setelah pengacakan ulang.
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowRegenerateConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onRegenerateDecks(questions.length, true);
+                  setShowRegenerateConfirm(false);
+                  sound.playClick();
+                  showToast(`Urutan kartu soal untuk ${teams.length} kelompok berhasil diacak ulang!`);
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
+              >
+                Ya, Acak Ulang
               </button>
             </div>
           </div>

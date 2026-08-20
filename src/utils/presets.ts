@@ -294,35 +294,44 @@ export function createDemoState(): {
 
 /**
  * Generates randomized card decks for all teams from question pool.
- * Each team gets cards (1..cardsPerTeam) pointing to questions.
- * If randomized is true, question order is shuffled uniquely per team!
+ * CORE RULE: EVERY team gets ALL questions in the question bank (questions.length).
+ * Only the order (permutation) is randomized per team without duplicates.
  */
 export function generateTeamCardDecks(
   teams: Team[],
   questions: Question[],
-  cardsPerTeam: number = 10,
+  _cardsPerTeam?: number,
   randomized: boolean = true
 ): Record<string, TeamCardAssignment[]> {
   const decks: Record<string, TeamCardAssignment[]> = {};
-  const validCardsCount = Math.min(cardsPerTeam, questions.length);
+  if (!questions || questions.length === 0 || !teams || teams.length === 0) {
+    return decks;
+  }
 
-  teams.forEach((team) => {
-    // Clone and shuffle question indices if randomized
+  const allQuestionIds = questions.map((q) => q.id);
+
+  teams.forEach((team, teamIdx) => {
+    // Clone all question indices
     const questionIndices = Array.from({ length: questions.length }, (_, i) => i);
 
-    if (randomized) {
-      // Fisher-Yates shuffle
+    if (randomized && questionIndices.length > 1) {
+      // Fisher-Yates shuffle with unique seed per team
       for (let i = questionIndices.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [questionIndices[i], questionIndices[j]] = [questionIndices[j], questionIndices[i]];
       }
-    }
 
-    const selectedIndices = questionIndices.slice(0, validCardsCount);
+      // If by chance for second+ team the permutation is exactly sequential, shift it by teamIdx
+      if (teamIdx > 0 && questionIndices.every((val, idx) => val === idx)) {
+        const shift = teamIdx % questionIndices.length;
+        const shifted = [...questionIndices.slice(shift), ...questionIndices.slice(0, shift)];
+        questionIndices.splice(0, questionIndices.length, ...shifted);
+      }
+    }
 
     const teamPrefix = team.name.replace(/[^A-Z0-9]/gi, '').slice(0, 3).toUpperCase() || 'K';
 
-    const cards: TeamCardAssignment[] = selectedIndices.map((qIdx, cardIndex) => {
+    const cards: TeamCardAssignment[] = questionIndices.map((qIdx, cardIndex) => {
       const cardNum = cardIndex + 1;
       const formattedNum = String(cardNum).padStart(2, '0');
       return {
@@ -338,4 +347,89 @@ export function generateTeamCardDecks(
   });
 
   return decks;
+}
+
+export interface DeckValidationResult {
+  isValid: boolean;
+  errors: string[];
+  totalCards: number;
+  questionsCount: number;
+  teamsCount: number;
+}
+
+/**
+ * Validates question bank and team card decks against MBB Core Rules:
+ * 1. Minimal 1 question
+ * 2. Minimal 1 team
+ * 3. All questions have complete data
+ * 4. Every team has exactly questions.length cards
+ * 5. No duplicates within any team's deck
+ * 6. Set of questions in each deck === Set of questions in bank
+ * 7. All teams have mapping
+ */
+export function validateDecksAndQuestions(
+  teams: Team[],
+  questions: Question[],
+  teamCardDecks: Record<string, TeamCardAssignment[]>
+): DeckValidationResult {
+  const errors: string[] = [];
+  const questionsCount = questions.length;
+  const teamsCount = teams.length;
+  const totalCards = questionsCount * teamsCount;
+
+  if (questionsCount === 0) {
+    errors.push('Bank Soal masih kosong. Tambahkan minimal 1 soal.');
+  }
+
+  if (teamsCount === 0) {
+    errors.push('Belum ada kelompok peserta. Tambahkan minimal 1 kelompok.');
+  }
+
+  // Check question completeness
+  const incompleteQuestions = questions.filter(
+    (q) => !q.questionText || !q.questionText.trim() || !q.correctAnswer || !q.correctAnswer.trim()
+  );
+  if (incompleteQuestions.length > 0) {
+    errors.push(`${incompleteQuestions.length} soal belum memiliki pertanyaan atau kunci jawaban lengkap.`);
+  }
+
+  const bankQuestionIdSet = new Set(questions.map((q) => q.id));
+
+  // Check each team's deck
+  teams.forEach((team) => {
+    const deck = teamCardDecks[team.id];
+    if (!deck || deck.length === 0) {
+      errors.push(`Kelompok "${team.name}" belum memiliki mapping urutan kartu soal.`);
+      return;
+    }
+
+    if (deck.length !== questionsCount) {
+      errors.push(
+        `Kelompok "${team.name}" memiliki ${deck.length} kartu, seharusnya ${questionsCount} kartu (sesuai Bank Soal).`
+      );
+    }
+
+    const deckQuestionIds = deck.map((c) => c.questionId);
+    const uniqueDeckQuestionIds = new Set(deckQuestionIds);
+
+    if (uniqueDeckQuestionIds.size !== deckQuestionIds.length) {
+      errors.push(`Ditemukan soal duplikat pada kelompok "${team.name}".`);
+    }
+
+    // Check if every question in Bank Soal is present in the team's deck
+    const missingInDeck = questions.filter((q) => !uniqueDeckQuestionIds.has(q.id));
+    if (missingInDeck.length > 0) {
+      errors.push(
+        `Kelompok "${team.name}" belum memuat semua soal dari Bank Soal (${missingInDeck.length} soal tidak ditemukan).`
+      );
+    }
+  });
+
+  return {
+    isValid: errors.length === 0 && questionsCount > 0 && teamsCount > 0,
+    errors,
+    totalCards,
+    questionsCount,
+    teamsCount,
+  };
 }
