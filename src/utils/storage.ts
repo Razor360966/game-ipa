@@ -3,6 +3,16 @@ import { DEFAULT_QUESTIONS, INITIAL_TEAMS, generateTeamCardDecks } from './prese
 
 const STORAGE_KEY = 'mbb_game_state_v1';
 
+// Clean up any legacy localStorage supabase keys so clients only use env variables
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('mbb_supabase_url');
+    localStorage.removeItem('mbb_supabase_anon_key');
+  } catch {
+    // ignore
+  }
+}
+
 export const DEFAULT_SETTINGS: GameSettings = {
   matchTitle: 'MEASUREMENT BLOCK BLAST',
   roundName: 'BABAK PENYISIHAN UTAMA',
