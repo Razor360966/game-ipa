@@ -138,6 +138,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     multiPartIntro: string;
     multiPartItems: { id: string; question: string; correctAnswer: string; alternativeAnswersText: string }[];
     multiPartScoringMode: 'full' | 'partial';
+    // Per-Question Custom Timer (in seconds, optional)
+    timeLimitSeconds: number | string;
   }>({
     code: '',
     type: 'short_answer',
@@ -166,6 +168,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       { id: 'p-2', question: '', correctAnswer: '', alternativeAnswersText: '' },
     ],
     multiPartScoringMode: 'partial',
+    timeLimitSeconds: '',
   });
   const [questionError, setQuestionError] = useState<string | null>(null);
 
@@ -373,6 +376,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         { id: 'p-2', question: '', correctAnswer: '', alternativeAnswersText: '' },
       ],
       multiPartScoringMode: 'partial',
+      timeLimitSeconds: '',
     });
     setIsQuestionModalOpen(true);
   };
@@ -434,6 +438,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       multiPartIntro,
       multiPartItems: resolvedMultiParts,
       multiPartScoringMode,
+      timeLimitSeconds: question.timeLimitSeconds !== undefined ? String(question.timeLimitSeconds) : '',
     });
     setIsQuestionModalOpen(true);
   };
@@ -536,6 +541,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             .filter(Boolean),
         })),
       };
+    }
+
+    // Process per-question time limit
+    const parsedTimeLimit = Number(questionForm.timeLimitSeconds);
+    if (!isNaN(parsedTimeLimit) && parsedTimeLimit > 0) {
+      extraData.timeLimitSeconds = parsedTimeLimit;
+    } else {
+      extraData.timeLimitSeconds = undefined;
     }
 
     if (editingQuestionId) {
@@ -1083,11 +1096,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     />
                   </div>
 
-                  {/* Durasi Pertandingan */}
+                  {/* Durasi Keseluruhan Game */}
                   <div className="space-y-2">
-                    <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-                      Durasi Pertandingan
-                    </label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
+                        Durasi Keseluruhan Game
+                      </label>
+                      <span className="text-[10px] text-cyan-400 font-bold">Total Waktu Babak</span>
+                    </div>
                     <div className="relative">
                       <select
                         id="select-match-duration"
@@ -1112,6 +1128,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         ▼
                       </span>
                     </div>
+                    <p className="text-[11px] text-slate-400">Total waktu hitung mundur untuk keseluruhan ronde pertandingan</p>
+                  </div>
+
+                  {/* Batas Waktu Menjawab Per Soal */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
+                        Batas Waktu Per Soal (Detik)
+                      </label>
+                      <span className="text-[10px] text-amber-400 font-bold">Khusus Tiap Soal</span>
+                    </div>
+                    <div className="relative">
+                      <select
+                        id="select-question-time-limit"
+                        value={matchForm.questionTimeLimitSeconds ?? 30}
+                        onChange={(e) =>
+                          setMatchForm({
+                            ...matchForm,
+                            questionTimeLimitSeconds: Number(e.target.value),
+                          })
+                        }
+                        className="w-full bg-slate-950/70 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none transition-all cursor-pointer appearance-none"
+                      >
+                        <option value={10} className="bg-slate-900 text-white">10 Detik (Sangat Cepat)</option>
+                        <option value={15} className="bg-slate-900 text-white">15 Detik (Cepat)</option>
+                        <option value={20} className="bg-slate-900 text-white">20 Detik</option>
+                        <option value={30} className="bg-slate-900 text-white">30 Detik (Standar Rekomendasi)</option>
+                        <option value={45} className="bg-slate-900 text-white">45 Detik</option>
+                        <option value={60} className="bg-slate-900 text-white">60 Detik (1 Menit)</option>
+                        <option value={90} className="bg-slate-900 text-white">90 Detik (1.5 Menit)</option>
+                        <option value={120} className="bg-slate-900 text-white">120 Detik (2 Menit)</option>
+                      </select>
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
+                        ▼
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Durasi batas waktu regu menjawab setelah kartu soal dibuka</p>
                   </div>
 
                   {/* Poin Jawaban Benar */}
@@ -1133,6 +1186,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       }
                       className="w-full bg-slate-950/70 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none transition-all"
                     />
+                    <p className="text-[11px] text-slate-400">Poin default jika soal tidak diatur poin khusus</p>
                   </div>
                 </div>
 
@@ -1467,9 +1521,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </td>
                               <td className="p-3 text-slate-200">
                                 <p className="line-clamp-1 font-semibold">{q.questionText}</p>
-                                {q.category && (
-                                  <span className="text-[10px] text-slate-500 font-normal">{q.category}</span>
-                                )}
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  {q.category && (
+                                    <span className="text-[10px] text-slate-500 font-normal">{q.category}</span>
+                                  )}
+                                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
+                                    q.timeLimitSeconds
+                                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                      : 'text-slate-500'
+                                  }`}>
+                                    ⏱️ {q.timeLimitSeconds ? `${q.timeLimitSeconds}s (Khusus)` : `${settings.questionTimeLimitSeconds ?? 30}s (Default)`}
+                                  </span>
+                                </div>
                               </td>
                               <td className="p-3">
                                 <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-[11px] line-clamp-1">
@@ -1695,7 +1758,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">Durasi (Menit)</label>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">Durasi Keseluruhan Game (Menit)</label>
+                    <span className="text-[10px] text-cyan-400 font-bold">Total Waktu Babak</span>
+                  </div>
                   <input
                     type="number"
                     min={1}
@@ -1704,6 +1770,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     onChange={(e) => setMatchForm({ ...matchForm, durationMinutes: Number(e.target.value) || 10 })}
                     className="w-full bg-slate-950/70 border border-white/15 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none"
                   />
+                  <p className="text-[11px] text-slate-400">Total hitung mundur seluruh permainan dalam 1 ronde</p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">Batas Waktu Per Soal (Detik)</label>
+                    <span className="text-[10px] text-amber-400 font-bold">Khusus Tiap Soal</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={matchForm.questionTimeLimitSeconds ?? 30}
+                    onChange={(e) => setMatchForm({ ...matchForm, questionTimeLimitSeconds: Number(e.target.value) || 30 })}
+                    className="w-full bg-slate-950/70 border border-white/15 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none"
+                  />
+                  <p className="text-[11px] text-slate-400">Waktu menjawab setiap kali regu membuka kartu soal</p>
                 </div>
 
                 <div className="space-y-2">
@@ -1716,11 +1799,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     onChange={(e) => setMatchForm({ ...matchForm, pointsPerCorrect: Number(e.target.value) || 10 })}
                     className="w-full bg-slate-950/70 border border-white/15 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none"
                   />
+                  <p className="text-[11px] text-slate-400">Poin default jika soal tidak memiliki poin khusus</p>
                 </div>
               </div>
 
               {/* Toggles */}
               <div className="pt-4 border-t border-white/10 space-y-4">
+                <label className="flex items-center justify-between p-4 rounded-2xl bg-slate-950/50 border border-white/10 cursor-pointer">
+                  <div>
+                    <p className="text-sm font-bold text-white">Aktifkan Batas Waktu Menjawab Per Soal</p>
+                    <p className="text-xs text-slate-400">
+                      Jika aktif, peserta memiliki hitung mundur khusus untuk menjawab setiap soal
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={matchForm.enableQuestionTimer ?? true}
+                    onChange={(e) => setMatchForm({ ...matchForm, enableQuestionTimer: e.target.checked })}
+                    className="w-5 h-5 rounded text-cyan-500 cursor-pointer"
+                  />
+                </label>
+
                 <label className="flex items-center justify-between p-4 rounded-2xl bg-slate-950/50 border border-white/10 cursor-pointer">
                   <div>
                     <p className="text-sm font-bold text-white">Efek Suara Permainan</p>
@@ -1920,9 +2019,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </td>
                           <td className="p-3 text-slate-200">
                             <p className="font-semibold">{q.questionText}</p>
-                            {q.category && (
-                              <span className="text-[10px] text-slate-500">{q.category}</span>
-                            )}
+                            <div className="flex items-center gap-2 mt-0.5">
+                              {q.category && (
+                                <span className="text-[10px] text-slate-500">{q.category}</span>
+                              )}
+                              <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
+                                q.timeLimitSeconds
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                  : 'text-slate-500'
+                              }`}>
+                                ⏱️ {q.timeLimitSeconds ? `${q.timeLimitSeconds}s (Khusus)` : `${settings.questionTimeLimitSeconds ?? 30}s (Default)`}
+                              </span>
+                            </div>
                           </td>
                           <td className="p-3">
                             <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-[11px]">
@@ -2911,8 +3019,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
 
-              {/* COMMON FIELDS: POIN, KATEGORI, PENJELASAN */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* COMMON FIELDS: POIN, KATEGORI, BATAS WAKTU KHUSUS, PENJELASAN */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label className="block text-xs font-bold text-slate-300 uppercase">Total Poin</label>
                   <input
@@ -2930,8 +3038,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     type="text"
                     value={questionForm.category}
                     onChange={(e) => setQuestionForm({ ...questionForm, category: e.target.value })}
-                    placeholder="Contoh: Pengukuran Panjang, Massa Jenis"
+                    placeholder="Contoh: Pengukuran Panjang"
                     className="w-full bg-slate-950 border border-white/15 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Batas Waktu (Detik)
+                    </label>
+                    <span className="text-[10px] text-amber-400 font-bold">Opsional</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={questionForm.timeLimitSeconds}
+                    onChange={(e) => setQuestionForm({ ...questionForm, timeLimitSeconds: e.target.value })}
+                    placeholder={`Default (${settings.questionTimeLimitSeconds ?? 30}s)`}
+                    className="w-full bg-slate-950 border border-white/15 focus:border-amber-400 rounded-xl px-3.5 py-2 text-sm font-bold text-amber-300 placeholder:text-slate-600 outline-none"
                   />
                 </div>
               </div>
@@ -3008,9 +3134,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {/* Content Preview */}
             <div className="space-y-4">
               <div className="p-4 rounded-2xl bg-slate-950/70 border border-white/10 space-y-2">
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Kategori: {previewQuestion.category || 'Pengukuran Fisika'} • {previewQuestion.points || 10} Poin
-                </span>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  <span>Kategori: {previewQuestion.category || 'Pengukuran Fisika'} • {previewQuestion.points || 10} Poin</span>
+                  <span className="text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                    ⏱️ Batas Waktu: {previewQuestion.timeLimitSeconds ? `${previewQuestion.timeLimitSeconds} Detik (Khusus)` : `${settings.questionTimeLimitSeconds ?? 30} Detik (Default Game)`}
+                  </span>
+                </div>
                 <p className="text-base font-semibold text-white leading-relaxed">
                   {previewQuestion.questionText}
                 </p>

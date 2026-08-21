@@ -56,6 +56,7 @@ export interface Question {
   category?: string;
   explanation?: string;
   unitHint?: string; // e.g. "cm", "kg", "m/s"
+  timeLimitSeconds?: number; // Optional custom time limit for this specific question in seconds
 
   // Extension for Multiple Choice
   options?: MultipleChoiceOption[];
@@ -88,7 +89,9 @@ export interface TeamCardDeck {
 export interface GameSettings {
   matchTitle: string;
   roundName: string;
-  durationMinutes: number;
+  durationMinutes: number; // Durasi keseluruhan game dalam menit
+  questionTimeLimitSeconds: number; // Batas waktu menjawab khusus per soal (detik), misal 30 detik
+  enableQuestionTimer: boolean; // Aktifkan/nonaktifkan batas waktu khusus per soal
   pointsPerCorrect: number;
   penaltyWrong: number;
   wrongAnswerRule: 'retry' | 'lock'; // 'retry' = can try again; 'lock' = locked after wrong
@@ -112,6 +115,8 @@ export interface ActivityLog {
 }
 
 export interface GameState {
+  competitionId?: string; // Room ID e.g. "MBB-2026-001"
+  startedAt?: number | null; // Server/host timestamp when timer started running
   settings: GameSettings;
   teams: Team[];
   questions: Question[];

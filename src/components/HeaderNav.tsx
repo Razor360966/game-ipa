@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { GameState } from '../types';
 import { sound } from '../utils/sound';
+import { DbSyncBar } from './DbSyncBar';
 
 interface HeaderNavProps {
   gameState: GameState;
@@ -26,6 +27,10 @@ interface HeaderNavProps {
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   onToggleSound: () => void;
+  currentRoomId?: string;
+  onChangeRoomId?: (newRoomId: string) => void;
+  onMigrateSuccess?: () => void;
+  isSyncing?: boolean;
 }
 
 export const HeaderNav: React.FC<HeaderNavProps> = ({
@@ -37,6 +42,10 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   isFullscreen,
   onToggleFullscreen,
   onToggleSound,
+  currentRoomId = 'MBB-2026-001',
+  onChangeRoomId = () => {},
+  onMigrateSuccess = () => {},
+  isSyncing = false,
 }) => {
   const { status, timeRemainingSeconds, settings } = gameState;
 
@@ -62,11 +71,17 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
                 <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
               </h1>
             </div>
-            <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-widest flex items-center gap-1.5 mt-0.5">
-              <span>{settings.roundName}</span>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[11px] text-slate-400 font-semibold uppercase tracking-widest">{settings.roundName}</span>
               <span className="text-white/20">•</span>
-              <span className="text-emerald-400 font-bold">Online 🟢</span>
-            </p>
+              <DbSyncBar
+                currentRoomId={currentRoomId}
+                onChangeRoomId={onChangeRoomId}
+                gameState={gameState}
+                onMigrateSuccess={onMigrateSuccess}
+                isSyncing={isSyncing}
+              />
+            </div>
           </div>
         </div>
 

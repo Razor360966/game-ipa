@@ -109,6 +109,54 @@ export const GameArena: React.FC<GameArenaProps> = ({
     );
   }, [selectedCard, questions]);
 
+  // -------------------------------------------------------------
+  // PER-QUESTION TIMER HOOKS & CALCULATIONS
+  // -------------------------------------------------------------
+  const questionTimeLimit =
+    selectedQuestion?.timeLimitSeconds && selectedQuestion.timeLimitSeconds > 0
+      ? selectedQuestion.timeLimitSeconds
+      : (settings.questionTimeLimitSeconds ?? 30);
+  const isQuestionTimerEnabled = settings.enableQuestionTimer ?? true;
+
+  const [questionSecondsLeft, setQuestionSecondsLeft] = useState<number>(questionTimeLimit);
+
+  // Reset timer on card open
+  useEffect(() => {
+    if (activeQuestionIndex !== null && selectedCard) {
+      setQuestionSecondsLeft(questionTimeLimit);
+    }
+  }, [activeQuestionIndex, selectedCard?.cardNumber, questionTimeLimit]);
+
+  // Question countdown interval when game is running
+  useEffect(() => {
+    if (
+      activeQuestionIndex === null ||
+      !selectedCard ||
+      !isQuestionTimerEnabled ||
+      gameStatus !== 'running'
+    ) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setQuestionSecondsLeft((prev) => {
+        if (prev <= 1) {
+          sound.playWrong();
+          onSubmitAnswer(activeQuestionIndex, '__TIMEOUT__');
+          return 0;
+        }
+        if (prev <= 5 && prev > 0) {
+          sound.playTick();
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [activeQuestionIndex, selectedCard, isQuestionTimerEnabled, gameStatus, onSubmitAnswer]);
+
   // Auto-focus and reset inputs when card is selected
   useEffect(() => {
     if (activeQuestionIndex !== null) {
@@ -330,6 +378,37 @@ export const GameArena: React.FC<GameArenaProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Per-Question Timer Pill in Header */}
+            {isQuestionTimerEnabled && (
+              <div
+                id="question-answering-timer"
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl border backdrop-blur-md transition-all ${
+                  questionSecondsLeft <= 5
+                    ? 'bg-rose-500/25 border-rose-400 text-rose-300 animate-pulse shadow-[0_0_20px_rgba(244,63,94,0.4)]'
+                    : questionSecondsLeft <= 10
+                    ? 'bg-amber-500/20 border-amber-400/50 text-amber-300'
+                    : 'bg-cyan-500/10 border-cyan-400/30 text-cyan-300'
+                }`}
+              >
+                <Clock className={`w-4 h-4 ${questionSecondsLeft <= 5 ? 'text-rose-400 animate-spin' : ''}`} />
+                <div className="flex flex-col items-start leading-none">
+                  <span className="text-[9px] uppercase font-bold tracking-wider opacity-75">WAKTU SOAL</span>
+                  <span className="font-mono font-black text-sm">{questionSecondsLeft}s</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    setQuestionSecondsLeft((prev) => prev + 10);
+                  }}
+                  title="Tambah +10 Detik Waktu Menjawab"
+                  className="ml-1 px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 text-[10px] font-bold text-white cursor-pointer"
+                >
+                  +10s
+                </button>
+              </div>
+            )}
+
             <span className="px-3 py-1.5 rounded-xl bg-cyan-500/10 border border-cyan-400/30 text-cyan-300 font-bold text-xs">
               +{selectedQuestion.points || settings.pointsPerCorrect} POIN
             </span>
@@ -348,6 +427,43 @@ export const GameArena: React.FC<GameArenaProps> = ({
 
         {/* Question Confirmation Box */}
         <div className="bg-slate-900/80 backdrop-blur-2xl border border-cyan-400/30 rounded-[36px] p-6 sm:p-10 shadow-[0_40px_100px_rgba(0,0,0,0.8)] relative">
+          {/* Question Answering Progress Bar */}
+          {isQuestionTimerEnabled && (
+            <div className="mb-4 pb-3 border-b border-white/10">
+              <div className="flex items-center justify-between text-[11px] font-bold mb-1.5">
+                <span
+                  className={`flex items-center gap-1.5 ${
+                    questionSecondsLeft <= 5
+                      ? 'text-rose-400 animate-pulse'
+                      : questionSecondsLeft <= 10
+                      ? 'text-amber-400'
+                      : 'text-cyan-400'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  Sisa Waktu Menjawab Soal: <span className="font-mono font-black text-sm">{questionSecondsLeft} Detik</span>
+                </span>
+                <span className="text-slate-400 text-[10px] uppercase tracking-wider">
+                  Batas Waktu: {questionTimeLimit}s
+                </span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-300 rounded-full ${
+                    questionSecondsLeft <= 5
+                      ? 'bg-rose-500 animate-pulse'
+                      : questionSecondsLeft <= 10
+                      ? 'bg-amber-400'
+                      : 'bg-gradient-to-r from-cyan-400 to-emerald-400'
+                  }`}
+                  style={{
+                    width: `${Math.max(0, Math.min(100, (questionSecondsLeft / questionTimeLimit) * 100))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
             <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs tracking-widest uppercase">
               <HelpCircle className="w-4 h-4" />
