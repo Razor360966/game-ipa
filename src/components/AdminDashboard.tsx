@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   LayoutDashboard,
   Settings,
@@ -42,6 +42,7 @@ import {
   ListOrdered,
   FileText,
   Check,
+  Loader2,
 } from 'lucide-react';
 import {
   GameState,
@@ -63,6 +64,9 @@ interface AdminDashboardProps {
   onUpdateSettings: (newSettings: GameSettings) => void;
   onUpdateTeams: (newTeams: Team[]) => void;
   onUpdateQuestions: (newQuestions: Question[]) => void;
+  onSaveQuestionDirect?: (question: Question, isEdit: boolean) => Promise<{ success: boolean; error?: string }>;
+  onDeleteQuestionDirect?: (questionId: string) => Promise<{ success: boolean; error?: string }>;
+  onRefreshFromCloud?: () => Promise<void>;
   onRegenerateDecks: (cardsPerTeam: number, randomized: boolean) => void;
   onStartPauseGame: () => void;
   onResetTimer: () => void;
@@ -81,6 +85,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateSettings,
   onUpdateTeams,
   onUpdateQuestions,
+  onSaveQuestionDirect,
+  onDeleteQuestionDirect,
+  onRefreshFromCloud,
   onRegenerateDecks,
   onStartPauseGame,
   onResetTimer,
@@ -106,6 +113,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Form state for match settings
   const [matchForm, setMatchForm] = useState<GameSettings>({ ...settings });
 
+  // Sync matchForm when settings update from other devices
+  useEffect(() => {
+    setMatchForm({ ...settings });
+  }, [settings]);
+
   // Team creation / editing state
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamColor, setNewTeamColor] = useState<TeamColor>('cyan');
@@ -115,6 +127,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [previewQuestion, setPreviewQuestion] = useState<Question | null>(null);
   const [questionSearch, setQuestionSearch] = useState('');
+  const [isSavingQuestion, setIsSavingQuestion] = useState(false);
+  const [isRefreshingCloud, setIsRefreshingCloud] = useState(false);
   const [questionForm, setQuestionForm] = useState<{
     code: string;
     type: QuestionType;
@@ -443,7 +457,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setIsQuestionModalOpen(true);
   };
 
-  const handleSaveQuestion = (e: React.FormEvent) => {
+  const handleSaveQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (questionForm.points <= 0) {
@@ -551,57 +565,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       extraData.timeLimitSeconds = undefined;
     }
 
-    if (editingQuestionId) {
-      // Update existing
-      const updated = questions.map((q) =>
-        q.id === editingQuestionId
-          ? {
-              ...q,
-              code: questionForm.code.trim() || q.code,
-              questionText: finalQuestionText,
-              correctAnswer: finalCorrectAnswer,
-              alternativeAnswers: finalAltAnswers,
-              points: Number(questionForm.points),
-              category: questionForm.category.trim(),
-              explanation: questionForm.explanation.trim(),
-              ...extraData,
-            }
-          : q
-      );
-      onUpdateQuestions(updated);
-      showToast('Soal berhasil diperbarui!');
-    } else {
-      // Add new
-      const newQuestion: Question = {
-        id: `q-${Date.now()}`,
-        code: questionForm.code.trim() || `Q-${String(questions.length + 1).padStart(2, '0')}`,
-        questionText: finalQuestionText,
-        correctAnswer: finalCorrectAnswer,
-        alternativeAnswers: finalAltAnswers,
-        points: Number(questionForm.points),
-        category: questionForm.category.trim(),
-        explanation: questionForm.explanation.trim(),
-        ...extraData,
-      };
-      const updated = [...questions, newQuestion];
-      onUpdateQuestions(updated);
-      showToast('Soal baru berhasil ditambahkan!');
-    }
+    setIsSavingQuestion(true);
+    try {
+      const isEdit = Boolean(editingQuestionId);
+      let questionObj: Question;
 
-    setIsQuestionModalOpen(false);
-    setEditingQuestionId(null);
-    sound.playClick();
+      if (editingQuestionId) {
+        const existing = questions.find((q) => q.id === editingQuestionId);
+        questionObj = {
+          ...(existing || {}),
+          id: editingQuestionId,
+          code: questionForm.code.trim() || existing?.code || `Q-${editingQuestionId}`,
+          questionText: finalQuestionText,
+          correctAnswer: finalCorrectAnswer,
+          alternativeAnswers: finalAltAnswers,
+          points: Number(questionForm.points),
+          category: questionForm.category.trim(),
+          explanation: questionForm.explanation.trim(),
+          ...extraData,
+        };
+      } else {
+        questionObj = {
+          id: `q-${Date.now()}`,
+          code: questionForm.code.trim() || `Q-${String(questions.length + 1).padStart(2, '0')}`,
+          questionText: finalQuestionText,
+          correctAnswer: finalCorrectAnswer,
+          alternativeAnswers: finalAltAnswers,
+          points: Number(questionForm.points),
+          category: questionForm.category.trim(),
+          explanation: questionForm.explanation.trim(),
+          ...extraData,
+        };
+      }
+
+      if (onSaveQuestionDirect) {
+        const res = await onSaveQuestionDirect(questionObj, isEdit);
+        if (!res.success) {
+          setQuestionError(res.error || 'Gagal menyimpan soal ke Supabase.');
+          setIsSavingQuestion(false);
+          return;
+        }
+      } else {
+        if (isEdit) {
+          const updated = questions.map((q) => (q.id === editingQuestionId ? questionObj : q));
+          onUpdateQuestions(updated);
+        } else {
+          onUpdateQuestions([...questions, questionObj]);
+        }
+      }
+
+      showToast(isEdit ? 'Soal berhasil diperbarui di Supabase! 💾' : 'Soal baru berhasil tersimpan permanen di Supabase! 💾');
+      setIsQuestionModalOpen(false);
+      setEditingQuestionId(null);
+      sound.playClick();
+    } catch (err: any) {
+      setQuestionError(err.message || 'Terjadi kesalahan saat menyimpan soal.');
+    } finally {
+      setIsSavingQuestion(false);
+    }
   };
 
-  const handleDeleteQuestion = (id: string) => {
+  const handleDeleteQuestion = async (id: string) => {
     if (questions.length <= 1) {
       showToast('Minimal harus ada 1 soal dalam bank soal.', 'error');
       return;
     }
     const qToDelete = questions.find((q) => q.id === id);
     if (confirm(`Hapus soal "${qToDelete?.code || id}"?`)) {
-      const updated = questions.filter((q) => q.id !== id);
-      onUpdateQuestions(updated);
+      if (onDeleteQuestionDirect) {
+        const res = await onDeleteQuestionDirect(id);
+        if (!res.success) {
+          showToast(res.error || 'Gagal menghapus soal dari Supabase.', 'error');
+          return;
+        }
+      } else {
+        const updated = questions.filter((q) => q.id !== id);
+        onUpdateQuestions(updated);
+      }
       sound.playClick();
       showToast('Soal berhasil dihapus.');
     }
@@ -1955,6 +1995,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
+                  {onRefreshFromCloud && (
+                    <button
+                      type="button"
+                      disabled={isRefreshingCloud}
+                      onClick={async () => {
+                        setIsRefreshingCloud(true);
+                        try {
+                          await onRefreshFromCloud();
+                          showToast('Bank Soal berhasil disinkronkan dari Supabase! 🔄');
+                        } catch (err) {
+                          showToast('Gagal memuat dari cloud', 'error');
+                        } finally {
+                          setIsRefreshingCloud(false);
+                        }
+                      }}
+                      className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white font-bold text-xs uppercase flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCloud ? 'animate-spin text-cyan-400' : ''}`} />
+                      <span>{isRefreshingCloud ? 'Menyinkronkan...' : 'Sinkronkan'}</span>
+                    </button>
+                  )}
+
                   <div className="relative">
                     <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
@@ -3085,16 +3147,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
                 <button
                   type="button"
+                  disabled={isSavingQuestion}
                   onClick={() => setIsQuestionModalOpen(false)}
-                  className="px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 font-bold text-xs cursor-pointer"
+                  className="px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 font-bold text-xs cursor-pointer disabled:opacity-50"
                 >
                   BATAL
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
+                  disabled={isSavingQuestion}
+                  className="px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-500/20 disabled:opacity-75 disabled:cursor-not-allowed"
                 >
-                  SIMPAN SOAL
+                  {isSavingQuestion ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                      <span>MENYIMPAN KE SUPABASE...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>SIMPAN SOAL</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

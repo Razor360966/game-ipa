@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GameState, Team, Question, GameSettings } from './types';
 import { getInitialGameState, saveGameState, DEFAULT_SETTINGS, getStoredRoomId, setStoredRoomId } from './utils/storage';
-import { generateTeamCardDecks, createDemoState, DEMO_QUESTIONS } from './utils/presets';
+import { generateTeamCardDecks, createDemoState, DEMO_QUESTIONS, INITIAL_TEAMS } from './utils/presets';
 import { sound } from './utils/sound';
 import { checkAnswer } from './utils/answerChecker';
 import { HeaderNav } from './components/HeaderNav';
@@ -10,10 +10,13 @@ import { ScoreboardView } from './components/ScoreboardView';
 import { AdminDashboard } from './components/AdminDashboard';
 import { PrintableCards } from './components/PrintableCards';
 import { GameOverModal } from './components/GameOverModal';
+import { RefreshCw } from 'lucide-react';
 import {
   loadCompetitionFromDb,
   saveCompetitionToDb,
   saveAllQuestionsToDb,
+  insertOrUpdateQuestionInDb,
+  deleteQuestionFromDb,
   updateDbGameState,
   updateDbCardAssignment,
   updateDbTeamScore,
@@ -23,6 +26,7 @@ import {
 
 export default function App() {
   const [currentRoomId, setCurrentRoomId] = useState<string>(() => getStoredRoomId());
+  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
   const [gameState, setGameState] = useState<GameState>(() => {
     const initial = getInitialGameState();
     initial.competitionId = getStoredRoomId();
@@ -58,7 +62,7 @@ export default function App() {
   }, [gameState.settings.soundEnabled]);
 
   // -------------------------------------------------------------
-  // DATABASE LOADER & REALTIME SYNC
+  // DATABASE LOADER & REALTIME SYNC (SUPABASE SINGLE SOURCE OF TRUTH)
   // -------------------------------------------------------------
   const loadRoomData = useCallback(async (roomId: string, isBackgroundSync: boolean = false) => {
     if (!isBackgroundSync) setIsSyncing(true);
@@ -73,39 +77,57 @@ export default function App() {
             calculatedRemaining = Math.max(0, cloudState.timeRemainingSeconds - elapsed);
           }
 
-          // Protect questions: if cloudState has questions, use them. If cloudState is empty (e.g. newly initialized DB), preserve prev.questions or seed to DB
-          let finalQuestions = cloudState.questions;
-          if (!finalQuestions || finalQuestions.length === 0) {
-            if (prev.questions && prev.questions.length > 0) {
-              finalQuestions = prev.questions;
-              saveAllQuestionsToDb(roomId, prev.questions).catch(() => {});
-            } else {
-              finalQuestions = DEMO_QUESTIONS;
-              saveAllQuestionsToDb(roomId, DEMO_QUESTIONS).catch(() => {});
-            }
+          // Protect questions: if cloud has questions, use them
+          const finalQuestions =
+            cloudState.questions && cloudState.questions.length > 0
+              ? cloudState.questions
+              : prev.questions && prev.questions.length > 0
+              ? prev.questions
+              : DEMO_QUESTIONS;
+
+          // Protect teams: if cloud has teams, use them
+          const finalTeams =
+            cloudState.teams && cloudState.teams.length > 0
+              ? cloudState.teams
+              : prev.teams && prev.teams.length > 0
+              ? prev.teams
+              : INITIAL_TEAMS;
+
+          // Ensure decks are generated if empty
+          let finalDecks = cloudState.teamCardDecks;
+          if (!finalDecks || Object.keys(finalDecks).length === 0) {
+            finalDecks = generateTeamCardDecks(finalTeams, finalQuestions, finalQuestions.length, true);
           }
 
           return {
             ...cloudState,
             questions: finalQuestions,
+            teams: finalTeams,
+            teamCardDecks: finalDecks,
             timeRemainingSeconds: calculatedRemaining,
           };
         });
       } else {
-        // If room does not exist in DB yet, attempt to initialize it with current local state
-        saveCompetitionToDb(gameState, roomId).catch(() => {});
+        // If room does not exist in DB yet, attempt to initialize it with current initial state
+        const initial = getInitialGameState();
+        initial.competitionId = roomId;
+        saveCompetitionToDb(initial, roomId).catch(() => {});
+        setGameState(initial);
       }
     } catch (err) {
       console.error('[loadRoomData Error]', err);
     } finally {
-      if (!isBackgroundSync) setIsSyncing(false);
+      if (!isBackgroundSync) {
+        setIsSyncing(false);
+        setIsInitialLoading(false);
+      }
     }
-  }, [gameState]);
+  }, []);
 
   // Load room data on mount and whenever currentRoomId changes
   useEffect(() => {
     loadRoomData(currentRoomId, false);
-  }, [currentRoomId]);
+  }, [currentRoomId, loadRoomData]);
 
   // Realtime subscription: When another PC changes something in this room
   useEffect(() => {
@@ -127,6 +149,10 @@ export default function App() {
     setStoredRoomId(formatted);
     setCurrentRoomId(formatted);
     setGameState((prev) => ({ ...prev, competitionId: formatted }));
+  };
+
+  const handleRefreshFromCloud = async () => {
+    await loadRoomData(currentRoomId, false);
   };
 
   // -------------------------------------------------------------
@@ -640,6 +666,74 @@ export default function App() {
     });
   };
 
+  const handleSaveQuestionDirect = async (
+    question: Question,
+    isEdit: boolean
+  ): Promise<{ success: boolean; error?: string }> => {
+    const orderIdx = isEdit
+      ? gameState.questions.findIndex((q) => q.id === question.id)
+      : gameState.questions.length;
+
+    const result = await insertOrUpdateQuestionInDb(currentRoomId, question, Math.max(0, orderIdx));
+    if (result.success) {
+      setGameState((prev) => {
+        const isMatchStarted =
+          prev.status === 'running' ||
+          prev.status === 'paused' ||
+          prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
+
+        const nextQuestions = isEdit
+          ? prev.questions.map((q) => (q.id === question.id ? question : q))
+          : [...prev.questions, question];
+
+        const newDecks = !isMatchStarted
+          ? generateTeamCardDecks(prev.teams, nextQuestions, nextQuestions.length, true)
+          : prev.teamCardDecks;
+
+        const nextState: GameState = {
+          ...prev,
+          questions: nextQuestions,
+          teamCardDecks: newDecks,
+        };
+        saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
+        return nextState;
+      });
+      return { success: true };
+    } else {
+      return result;
+    }
+  };
+
+  const handleDeleteQuestionDirect = async (
+    questionId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const result = await deleteQuestionFromDb(currentRoomId, questionId);
+    if (result.success) {
+      setGameState((prev) => {
+        const isMatchStarted =
+          prev.status === 'running' ||
+          prev.status === 'paused' ||
+          prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
+
+        const nextQuestions = prev.questions.filter((q) => q.id !== questionId);
+        const newDecks = !isMatchStarted
+          ? generateTeamCardDecks(prev.teams, nextQuestions, nextQuestions.length, true)
+          : prev.teamCardDecks;
+
+        const nextState: GameState = {
+          ...prev,
+          questions: nextQuestions,
+          teamCardDecks: newDecks,
+        };
+        saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
+        return nextState;
+      });
+      return { success: true };
+    } else {
+      return result;
+    }
+  };
+
   const handleRegenerateDecks = (_cardsPerTeam?: number, randomized: boolean = true) => {
     setGameState((prev) => {
       const newDecks = generateTeamCardDecks(prev.teams, prev.questions, prev.questions.length, randomized);
@@ -839,6 +933,51 @@ export default function App() {
   const totalCorrect = gameState.teams.reduce((acc, t) => acc + t.correctCount, 0);
   const totalWrong = gameState.teams.reduce((acc, t) => acc + t.wrongCount, 0);
 
+  if (isInitialLoading) {
+    return (
+      <div className="min-h-screen bg-[#020617] text-slate-100 flex flex-col items-center justify-center p-6 relative overflow-hidden font-sans">
+        <div className="pointer-events-none fixed top-[-10%] right-[-10%] w-[500px] h-[500px] bg-cyan-500/15 blur-[130px] rounded-full z-0" />
+        <div className="pointer-events-none fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-500/15 blur-[130px] rounded-full z-0" />
+
+        <div className="relative z-10 max-w-md w-full bg-slate-900/90 backdrop-blur-2xl border border-cyan-400/30 rounded-3xl p-8 shadow-[0_0_60px_rgba(6,182,212,0.15)] text-center space-y-6">
+          <div className="w-16 h-16 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center mx-auto text-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.3)]">
+            <RefreshCw className="w-8 h-8 animate-spin text-cyan-400" />
+          </div>
+
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-400/30 text-cyan-300 text-xs font-mono font-bold tracking-wider uppercase">
+              <span>ROOM: {currentRoomId}</span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-white uppercase tracking-tight">
+              Memuat Data dari Supabase...
+            </h2>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Menghubungkan ke database cloud bersama untuk sinkronisasi seluruh perangkat (Laptop, HP, Tablet)...
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-white/10 text-[11px] text-slate-300 space-y-1 text-left">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span className="font-semibold text-white">Sinkronisasi Real-Time Aktif</span>
+            </div>
+            <p className="text-slate-400 text-[10px]">
+              Data soal, pengaturan, dan kelompok disamakan secara instan antargadget.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsInitialLoading(false)}
+            className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+          >
+            Lewati / Buka Langsung
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="min-h-screen bg-[#020617] text-slate-100 flex flex-col font-sans relative overflow-x-hidden selection:bg-cyan-500 selection:text-slate-950"
@@ -889,6 +1028,9 @@ export default function App() {
             onUpdateSettings={handleUpdateSettings}
             onUpdateTeams={handleUpdateTeams}
             onUpdateQuestions={handleUpdateQuestions}
+            onSaveQuestionDirect={handleSaveQuestionDirect}
+            onDeleteQuestionDirect={handleDeleteQuestionDirect}
+            onRefreshFromCloud={handleRefreshFromCloud}
             onRegenerateDecks={handleRegenerateDecks}
             onStartPauseGame={handleStartPause}
             onResetTimer={handleResetTimer}
