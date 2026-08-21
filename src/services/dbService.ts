@@ -4,6 +4,7 @@ import {
   GameSettings,
   Team,
   Question,
+  QuestionType,
   TeamCardAssignment,
   ActivityLog,
   GameStatus,
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS public.teams (
   correct_count INT DEFAULT 0,
   wrong_count INT DEFAULT 0,
   order_index INT DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (id, competition_id)
 );
 
@@ -61,18 +63,41 @@ CREATE TABLE IF NOT EXISTS public.questions (
   id VARCHAR(100) NOT NULL,
   competition_id VARCHAR(100) REFERENCES public.competitions(id) ON DELETE CASCADE,
   code VARCHAR(50) NOT NULL,
+  title VARCHAR(100),
+  question_type VARCHAR(50) DEFAULT 'short_answer',
   type VARCHAR(50) DEFAULT 'short_answer',
-  question_text TEXT NOT NULL,
-  points INT DEFAULT 10,
-  category VARCHAR(100),
-  explanation TEXT,
+  prompt TEXT,
+  question_text TEXT,
+  correct_answer TEXT,
+  unit VARCHAR(50),
   unit_hint VARCHAR(50),
-  time_limit_seconds INT,
+  explanation TEXT,
   order_index INT DEFAULT 0,
+  time_limit_seconds INT,
+  options JSONB,
+  correct_option_id TEXT,
+  statement_config JSONB,
+  multi_part_config JSONB,
   answer_data JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (id, competition_id)
 );
+
+-- Migration safety for existing questions tables
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS title VARCHAR(100);
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS question_type VARCHAR(50) DEFAULT 'short_answer';
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS prompt TEXT;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'short_answer';
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS question_text TEXT;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS correct_answer TEXT;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS unit VARCHAR(50);
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS unit_hint VARCHAR(50);
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS explanation TEXT;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS options JSONB;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS correct_option_id TEXT;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS statement_config JSONB;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS multi_part_config JSONB;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS answer_data JSONB DEFAULT '{}'::jsonb;
 
 -- 4. Tabel question_assignments (Urutan Soal Per Kelompok)
 CREATE TABLE IF NOT EXISTS public.question_assignments (
@@ -135,8 +160,29 @@ BEGIN
 END $$;
 `;
 
-// Helper: Convert Question object to Database row format
-export const questionToDbRow = (q: Question, competitionId: string, orderIndex: number) => {
+// Helper: Convert Question object to Direct Database row format (prompt, question_type, options, etc.)
+export const questionToDbRowDirect = (q: Question, competitionId: string, orderIndex: number) => {
+  return {
+    id: String(q.id),
+    competition_id: competitionId,
+    code: q.code || q.id,
+    title: q.code || q.id,
+    question_type: q.type || 'short_answer',
+    prompt: q.questionText || '',
+    correct_answer: q.correctAnswer || '',
+    unit: q.unitHint || '',
+    explanation: q.explanation || '',
+    order_index: orderIndex,
+    time_limit_seconds: q.timeLimitSeconds || null,
+    options: q.options || null,
+    correct_option_id: q.correctOptionId || null,
+    statement_config: q.statementConfig || null,
+    multi_part_config: q.multiPartConfig || null,
+  };
+};
+
+// Helper: Convert Question object to AnswerData Database row format (question_text, type, answer_data)
+export const questionToDbRowAnswerData = (q: Question, competitionId: string, orderIndex: number) => {
   let answerData: Record<string, any> = {};
 
   if (q.type === 'multiple_choice') {
@@ -171,12 +217,12 @@ export const questionToDbRow = (q: Question, competitionId: string, orderIndex: 
   }
 
   return {
-    id: q.id,
+    id: String(q.id),
     competition_id: competitionId,
-    code: q.code,
+    code: q.code || q.id,
     type: q.type || 'short_answer',
-    question_text: q.questionText,
-    points: q.points || 10,
+    question_text: q.questionText || '',
+    points: typeof q.points === 'number' ? q.points : 10,
     category: q.category || '',
     explanation: q.explanation || '',
     unit_hint: q.unitHint || '',
@@ -186,38 +232,232 @@ export const questionToDbRow = (q: Question, competitionId: string, orderIndex: 
   };
 };
 
-// Helper: Convert Database row back to Question model
+// Default export mapper
+export const questionToDbRow = questionToDbRowDirect;
+
+// Helper: Convert Database row back to Question model (Multi-schema tolerant)
 export const dbRowToQuestion = (row: any): Question => {
   const answerData = row.answer_data || {};
-  const type = row.type || 'short_answer';
+  const type: QuestionType = (row.type || row.question_type || 'short_answer') as QuestionType;
 
-  let correctAnswer = answerData.correctAnswer || '';
-  let alternativeAnswers = answerData.alternativeAnswers || [];
+  // Extract correct answer with multi-field fallback
+  let correctAnswer =
+    row.correct_answer ||
+    answerData.correctAnswer ||
+    (answerData.acceptedAnswers && answerData.acceptedAnswers[0]) ||
+    '';
 
+  // Extract alternative answers with multi-field fallback
+  let alternativeAnswers: string[] =
+    row.alternative_answers ||
+    answerData.alternativeAnswers ||
+    (answerData.acceptedAnswers && answerData.acceptedAnswers.length > 1
+      ? answerData.acceptedAnswers.slice(1)
+      : []) ||
+    [];
+
+  // If short_answer and acceptedAnswers exists, normalize
   if (type === 'short_answer' && answerData.acceptedAnswers && answerData.acceptedAnswers.length > 0) {
     if (!correctAnswer) correctAnswer = answerData.acceptedAnswers[0];
-    if (alternativeAnswers.length === 0) {
+    if (alternativeAnswers.length === 0 && answerData.acceptedAnswers.length > 1) {
       alternativeAnswers = answerData.acceptedAnswers.slice(1);
     }
   }
 
+  // Extract options (can be in column or inside answer_data)
+  const options = row.options || answerData.options || undefined;
+  const correctOptionId =
+    row.correct_option_id ||
+    answerData.correctOptionId ||
+    (type === 'multiple_choice' ? correctAnswer : undefined);
+
+  // Extract statement config
+  const statementConfig = row.statement_config || answerData.statementConfig || undefined;
+
+  // Extract multi part config
+  const multiPartConfig = row.multi_part_config || answerData.multiPartConfig || undefined;
+
   return {
-    id: row.id,
-    code: row.code,
+    id: String(row.id),
+    code: row.code || row.title || String(row.id),
     type: type,
-    questionText: row.question_text || '',
-    correctAnswer: correctAnswer,
-    alternativeAnswers: alternativeAnswers,
+    questionText: row.question_text || row.prompt || row.text || row.title || '',
+    correctAnswer: String(correctAnswer || ''),
+    alternativeAnswers: Array.isArray(alternativeAnswers) ? alternativeAnswers : [],
     points: Number(row.points) || 10,
-    category: row.category || undefined,
-    explanation: row.explanation || undefined,
-    unitHint: row.unit_hint || undefined,
+    category: row.category || row.topic || undefined,
+    explanation: row.explanation || row.pembahasan || undefined,
+    unitHint: row.unit_hint || row.unit || undefined,
     timeLimitSeconds: row.time_limit_seconds ? Number(row.time_limit_seconds) : undefined,
-    options: answerData.options || undefined,
-    correctOptionId: answerData.correctOptionId || undefined,
-    statementConfig: answerData.statementConfig || undefined,
-    multiPartConfig: answerData.multiPartConfig || undefined,
+    options: options,
+    correctOptionId: correctOptionId,
+    statementConfig: statementConfig,
+    multiPartConfig: multiPartConfig,
   };
+};
+
+/**
+ * Fetch all questions for a competition directly from Supabase
+ */
+export const fetchQuestionsFromDb = async (competitionId: string): Promise<Question[]> => {
+  const supabase = getSupabase();
+  if (!supabase || !competitionId) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('questions')
+      .select('*')
+      .eq('competition_id', competitionId)
+      .order('order_index', { ascending: true });
+
+    if (error) {
+      console.error('[Supabase fetchQuestions error]', error);
+      return [];
+    }
+
+    return (data || []).map(dbRowToQuestion);
+  } catch (err) {
+    console.error('[Supabase fetchQuestions exception]', err);
+    return [];
+  }
+};
+
+/**
+ * Insert or update a single Question in Supabase directly
+ */
+export const insertOrUpdateQuestionInDb = async (
+  competitionId: string,
+  question: Question,
+  orderIndex: number = 0
+): Promise<{ success: boolean; error?: string }> => {
+  const supabase = getSupabase();
+  if (!supabase || !competitionId) {
+    return { success: false, error: 'Database belum terhubung.' };
+  }
+
+  try {
+    const directRow = questionToDbRowDirect(question, competitionId, orderIndex);
+    const { error: directErr } = await supabase.from('questions').upsert(directRow);
+
+    if (directErr) {
+      if (directErr.code === 'PGRST204' || directErr.message?.includes('column')) {
+        const altRow = questionToDbRowAnswerData(question, competitionId, orderIndex);
+        const { error: altErr } = await supabase.from('questions').upsert(altRow);
+        if (altErr) {
+          console.error('[Supabase insertOrUpdateQuestion alt error]', altErr);
+          return { success: false, error: altErr.message };
+        }
+      } else {
+        console.error('[Supabase insertOrUpdateQuestion error]', directErr);
+        return { success: false, error: directErr.message };
+      }
+    }
+
+    console.info(`[Supabase Bank Soal] Soal ${question.code} (${question.id}) berhasil disimpan.`);
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Supabase insertOrUpdateQuestion exception]', err);
+    return { success: false, error: err?.message || 'Gagal menyimpan soal.' };
+  }
+};
+
+/**
+ * Delete a Question from Supabase directly
+ */
+export const deleteQuestionFromDb = async (
+  competitionId: string,
+  questionId: string
+): Promise<{ success: boolean; error?: string }> => {
+  const supabase = getSupabase();
+  if (!supabase || !competitionId || !questionId) {
+    return { success: false, error: 'Parameter tidak lengkap.' };
+  }
+
+  try {
+    const { error } = await supabase
+      .from('questions')
+      .delete()
+      .eq('competition_id', competitionId)
+      .eq('id', questionId);
+
+    if (error) {
+      console.error('[Supabase deleteQuestion error]', error);
+      return { success: false, error: error.message };
+    }
+
+    console.info(`[Supabase Bank Soal] Soal ${questionId} berhasil dihapus dari DB.`);
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Supabase deleteQuestion exception]', err);
+    return { success: false, error: err?.message || 'Gagal menghapus soal.' };
+  }
+};
+
+/**
+ * Save all questions array to Supabase with pruning of removed questions
+ */
+export const saveAllQuestionsToDb = async (
+  competitionId: string,
+  questions: Question[]
+): Promise<{ success: boolean; error?: string }> => {
+  const supabase = getSupabase();
+  if (!supabase || !competitionId) {
+    return { success: false, error: 'Database belum terhubung.' };
+  }
+
+  try {
+    if (questions.length > 0) {
+      // First attempt direct column schema (prompt, question_type, options, etc.)
+      const directRows = questions.map((q, idx) => questionToDbRowDirect(q, competitionId, idx));
+      const { error: directErr } = await supabase.from('questions').upsert(directRows);
+
+      if (directErr) {
+        // If column mismatch error (PGRST204), try AnswerData format
+        if (directErr.code === 'PGRST204' || directErr.message?.includes('column')) {
+          console.warn('[Supabase saveAllQuestions] Retrying with answer_data format...');
+          const altRows = questions.map((q, idx) => questionToDbRowAnswerData(q, competitionId, idx));
+          const { error: altErr } = await supabase.from('questions').upsert(altRows);
+          if (altErr) {
+            console.error('[Supabase saveAllQuestions alt upsert error]', altErr);
+            return { success: false, error: altErr.message };
+          }
+        } else {
+          console.error('[Supabase saveAllQuestions upsert error]', directErr);
+          return { success: false, error: directErr.message };
+        }
+      }
+    }
+
+    // Clean up any questions from this competition that are no longer in the list
+    const currentIds = questions.map((q) => String(q.id));
+    const { data: existingData, error: fetchErr } = await supabase
+      .from('questions')
+      .select('id')
+      .eq('competition_id', competitionId);
+
+    if (!fetchErr && existingData && existingData.length > 0) {
+      const idsToDelete = existingData
+        .filter((item) => !currentIds.includes(String(item.id)))
+        .map((item) => item.id);
+
+      if (idsToDelete.length > 0) {
+        const { error: delErr } = await supabase
+          .from('questions')
+          .delete()
+          .eq('competition_id', competitionId)
+          .in('id', idsToDelete);
+
+        if (delErr) {
+          console.warn('[Supabase prune deleted questions warning]', delErr);
+        }
+      }
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Supabase saveAllQuestions exception]', err);
+    return { success: false, error: err?.message || 'Gagal menyinkronkan seluruh soal.' };
+  }
 };
 
 /**
@@ -453,13 +693,15 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
       order_index: idx,
     }));
     if (teamRows.length > 0) {
-      await supabase.from('teams').upsert(teamRows);
+      const { error: teamsErr } = await supabase.from('teams').upsert(teamRows);
+      if (teamsErr) {
+        console.error('[Save Teams Error]', teamsErr);
+      }
     }
 
-    // 3. Upsert questions
-    const questionRows = state.questions.map((q, idx) => questionToDbRow(q, roomId, idx));
-    if (questionRows.length > 0) {
-      await supabase.from('questions').upsert(questionRows);
+    // 3. Upsert & sync questions (with pruning of deleted questions)
+    if (state.questions && state.questions.length > 0) {
+      await saveAllQuestionsToDb(roomId, state.questions);
     }
 
     // 4. Upsert question assignments

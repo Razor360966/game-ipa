@@ -1943,10 +1943,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-3xl p-6 shadow-xl space-y-6 animate-in fade-in duration-200">
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
                 <div>
-                  <h2 className="text-xl font-bold text-white uppercase tracking-wider">
-                    BANK SOAL ({questions.length})
-                  </h2>
-                  <p className="text-xs text-slate-400">Daftar lengkap soal dan kunci jawaban</p>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h2 className="text-xl font-bold text-white uppercase tracking-wider">
+                      BANK SOAL ({questions.length})
+                    </h2>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> Supabase Synced
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">Daftar lengkap soal dan kunci jawaban yang tersimpan permanen</p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
@@ -1964,8 +1969,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <button
                     type="button"
                     onClick={openNewQuestionModal}
-                    className="px-4 py-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs uppercase cursor-pointer"
+                    className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-lg shadow-cyan-500/20"
                   >
+                    <Plus className="w-4 h-4" />
                     + Tambah Soal
                   </button>
                 </div>

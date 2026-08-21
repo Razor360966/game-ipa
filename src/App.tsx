@@ -13,6 +13,7 @@ import { GameOverModal } from './components/GameOverModal';
 import {
   loadCompetitionFromDb,
   saveCompetitionToDb,
+  saveAllQuestionsToDb,
   updateDbGameState,
   updateDbCardAssignment,
   updateDbTeamScore,
@@ -72,8 +73,21 @@ export default function App() {
             calculatedRemaining = Math.max(0, cloudState.timeRemainingSeconds - elapsed);
           }
 
+          // Protect questions: if cloudState has questions, use them. If cloudState is empty (e.g. newly initialized DB), preserve prev.questions or seed to DB
+          let finalQuestions = cloudState.questions;
+          if (!finalQuestions || finalQuestions.length === 0) {
+            if (prev.questions && prev.questions.length > 0) {
+              finalQuestions = prev.questions;
+              saveAllQuestionsToDb(roomId, prev.questions).catch(() => {});
+            } else {
+              finalQuestions = DEMO_QUESTIONS;
+              saveAllQuestionsToDb(roomId, DEMO_QUESTIONS).catch(() => {});
+            }
+          }
+
           return {
             ...cloudState,
+            questions: finalQuestions,
             timeRemainingSeconds: calculatedRemaining,
           };
         });
@@ -617,6 +631,10 @@ export default function App() {
         teamCardDecks: newDecks,
       };
 
+      // Persist questions directly to Supabase
+      saveAllQuestionsToDb(currentRoomId, newQuestions).catch((err) => {
+        console.error('[handleUpdateQuestions saveAllQuestions error]', err);
+      });
       saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
       return nextState;
     });
