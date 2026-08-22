@@ -167,8 +167,20 @@ const unsupportedQuestionColumns = new Set<string>();
 
 // Helper: Convert Question object to Direct Database row format (prompt, question_type, options, etc.)
 export const questionToDbRowDirect = (q: Question, competitionId: string, orderIndex: number) => {
-  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.filter(Boolean) : [];
+  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
   const codeVal = q.code || q.id || 'Q';
+
+  // For short_answer, preserve alternativeAnswers in options jsonb as universal fallback
+  let optionsPayload: any = q.options || null;
+  if (!optionsPayload && q.type === 'short_answer' && alts.length > 0) {
+    optionsPayload = { alternativeAnswers: alts };
+  }
+
+  // Also preserve in statement_config if statement_config is null and alts exist
+  let statementConfigPayload: any = q.statementConfig || null;
+  if (!statementConfigPayload && q.type === 'short_answer' && alts.length > 0) {
+    statementConfigPayload = { alternativeAnswers: alts };
+  }
 
   return {
     id: String(q.id),
@@ -188,17 +200,22 @@ export const questionToDbRowDirect = (q: Question, competitionId: string, orderI
     category: q.category || '',
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
-    options: q.options || null,
+    options: optionsPayload,
     correct_option_id: q.correctOptionId || null,
-    statement_config: q.statementConfig || null,
+    statement_config: statementConfigPayload,
     multi_part_config: q.multiPartConfig || null,
   };
 };
 
 // Helper: Convert Question object to Clean/Core Database row format (without extra optional columns)
 export const questionToDbRowClean = (q: Question, competitionId: string, orderIndex: number) => {
-  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.filter(Boolean) : [];
+  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
   const codeVal = q.code || q.id || 'Q';
+
+  let optionsPayload: any = q.options || null;
+  if (!optionsPayload && q.type === 'short_answer' && alts.length > 0) {
+    optionsPayload = { alternativeAnswers: alts };
+  }
 
   return {
     id: String(q.id),
@@ -218,7 +235,7 @@ export const questionToDbRowClean = (q: Question, competitionId: string, orderIn
     category: q.category || '',
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
-    options: q.options || null,
+    options: optionsPayload,
     correct_option_id: q.correctOptionId || null,
     statement_config: q.statementConfig || null,
     multi_part_config: q.multiPartConfig || null,
@@ -254,6 +271,16 @@ export const buildAdaptiveQuestionRow = (
     delete row[col];
   }
 
+  // If alternative_answers column is unsupported/excluded, preserve in options/statement_config if possible
+  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
+  if (excludeCols.has('alternative_answers') && alts.length > 0) {
+    if (!excludeCols.has('options') && !row.options) {
+      row.options = { alternativeAnswers: alts };
+    } else if (!excludeCols.has('statement_config') && !row.statement_config) {
+      row.statement_config = { alternativeAnswers: alts };
+    }
+  }
+
   // Ensure mandatory columns are never omitted
   const codeVal = q.code || q.id || 'Q';
   if (!row.id) row.id = String(q.id);
@@ -272,6 +299,25 @@ export const dbRowToQuestion = (row: any): Question => {
   const answerData = row.answer_data || {};
   const type: QuestionType = (row.type || row.question_type || 'short_answer') as QuestionType;
 
+  // Safe parsing of JSON/object columns if returned as string
+  let parsedOptions = row.options;
+  if (typeof parsedOptions === 'string') {
+    try {
+      parsedOptions = JSON.parse(parsedOptions);
+    } catch {
+      // keep as string if parse fails
+    }
+  }
+
+  let parsedStatementConfig = row.statement_config;
+  if (typeof parsedStatementConfig === 'string') {
+    try {
+      parsedStatementConfig = JSON.parse(parsedStatementConfig);
+    } catch {
+      // keep as string if parse fails
+    }
+  }
+
   // Extract correct answer with multi-field fallback
   let correctAnswer =
     row.correct_answer ||
@@ -289,12 +335,27 @@ export const dbRowToQuestion = (row: any): Question => {
     }
   }
 
+  const optionsAlts =
+    parsedOptions && !Array.isArray(parsedOptions) && Array.isArray(parsedOptions.alternativeAnswers)
+      ? parsedOptions.alternativeAnswers
+      : null;
+
+  const stmtAlts =
+    parsedStatementConfig && Array.isArray(parsedStatementConfig.alternativeAnswers)
+      ? parsedStatementConfig.alternativeAnswers
+      : null;
+
   let alternativeAnswers: string[] =
-    (Array.isArray(rawAlts) ? rawAlts : null) ||
-    (Array.isArray(answerData.alternativeAnswers) ? answerData.alternativeAnswers : null) ||
+    (Array.isArray(rawAlts) && rawAlts.length > 0 ? rawAlts : null) ||
+    (Array.isArray(optionsAlts) && optionsAlts.length > 0 ? optionsAlts : null) ||
+    (Array.isArray(stmtAlts) && stmtAlts.length > 0 ? stmtAlts : null) ||
+    (Array.isArray(answerData.alternativeAnswers) && answerData.alternativeAnswers.length > 0
+      ? answerData.alternativeAnswers
+      : null) ||
     (Array.isArray(answerData.acceptedAnswers) && answerData.acceptedAnswers.length > 1
       ? answerData.acceptedAnswers.slice(1)
       : []) ||
+    (Array.isArray(rawAlts) ? rawAlts : []) ||
     [];
 
   // If short_answer and acceptedAnswers exists, normalize
@@ -310,15 +371,23 @@ export const dbRowToQuestion = (row: any): Question => {
     .map((s: any) => (typeof s === 'string' ? s.trim() : String(s || '')))
     .filter(Boolean);
 
-  // Extract options (can be in column or inside answer_data)
-  const options = row.options || answerData.options || undefined;
+  // Extract options (only if array of MultipleChoiceOption)
+  const resolvedOptions = Array.isArray(parsedOptions)
+    ? parsedOptions
+    : Array.isArray(answerData.options)
+    ? answerData.options
+    : undefined;
+
   const correctOptionId =
     row.correct_option_id ||
     answerData.correctOptionId ||
     (type === 'multiple_choice' ? correctAnswer : undefined);
 
   // Extract statement config
-  const statementConfig = row.statement_config || answerData.statementConfig || undefined;
+  const resolvedStatementConfig =
+    parsedStatementConfig && (parsedStatementConfig.statement || parsedStatementConfig.isTrue !== undefined)
+      ? parsedStatementConfig
+      : answerData.statementConfig || undefined;
 
   // Extract multi part config
   const multiPartConfig = row.multi_part_config || answerData.multiPartConfig || undefined;
@@ -334,11 +403,11 @@ export const dbRowToQuestion = (row: any): Question => {
     category: row.category || row.topic || undefined,
     explanation: row.explanation || row.pembahasan || undefined,
     unitHint: row.unit_hint || row.unit || undefined,
+    options: resolvedOptions,
+    correctOptionId,
+    statementConfig: resolvedStatementConfig,
+    multiPartConfig,
     timeLimitSeconds: row.time_limit_seconds ? Number(row.time_limit_seconds) : undefined,
-    options: options,
-    correctOptionId: correctOptionId,
-    statementConfig: statementConfig,
-    multiPartConfig: multiPartConfig,
   };
 };
 
