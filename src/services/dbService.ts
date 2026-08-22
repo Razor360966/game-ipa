@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS public.questions (
   prompt TEXT,
   question_text TEXT,
   correct_answer TEXT,
+  alternative_answers TEXT[],
   unit VARCHAR(50),
   unit_hint VARCHAR(50),
   explanation TEXT,
@@ -90,6 +91,7 @@ ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS prompt TEXT;
 ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'short_answer';
 ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS question_text TEXT;
 ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS correct_answer TEXT;
+ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS alternative_answers TEXT[];
 ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS unit VARCHAR(50);
 ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS unit_hint VARCHAR(50);
 ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS explanation TEXT;
@@ -160,18 +162,30 @@ BEGIN
 END $$;
 `;
 
+// Track columns that are confirmed not existing in the schema cache to avoid PGRST204 errors
+const unsupportedQuestionColumns = new Set<string>();
+
 // Helper: Convert Question object to Direct Database row format (prompt, question_type, options, etc.)
 export const questionToDbRowDirect = (q: Question, competitionId: string, orderIndex: number) => {
+  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.filter(Boolean) : [];
+  const codeVal = q.code || q.id || 'Q';
+
   return {
     id: String(q.id),
     competition_id: competitionId,
-    code: q.code || q.id,
-    title: q.code || q.id,
+    code: codeVal,
+    title: codeVal,
     question_type: q.type || 'short_answer',
+    type: q.type || 'short_answer',
     prompt: q.questionText || '',
+    question_text: q.questionText || '',
     correct_answer: q.correctAnswer || '',
+    alternative_answers: alts,
     unit: q.unitHint || '',
+    unit_hint: q.unitHint || '',
     explanation: q.explanation || '',
+    points: typeof q.points === 'number' ? q.points : 10,
+    category: q.category || '',
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
     options: q.options || null,
@@ -181,55 +195,73 @@ export const questionToDbRowDirect = (q: Question, competitionId: string, orderI
   };
 };
 
-// Helper: Convert Question object to AnswerData Database row format (question_text, type, answer_data)
-export const questionToDbRowAnswerData = (q: Question, competitionId: string, orderIndex: number) => {
-  let answerData: Record<string, any> = {};
-
-  if (q.type === 'multiple_choice') {
-    answerData = {
-      options: q.options || [],
-      correctOptionId: q.correctOptionId || q.correctAnswer || 'A',
-      correctAnswer: q.correctAnswer,
-    };
-  } else if (q.type === 'statement_correction') {
-    answerData = {
-      statementConfig: q.statementConfig || {
-        statement: q.questionText,
-        isTrue: true,
-      },
-      correctAnswer: q.correctAnswer,
-      alternativeAnswers: q.alternativeAnswers || [],
-    };
-  } else if (q.type === 'multi_part') {
-    answerData = {
-      multiPartConfig: q.multiPartConfig || {
-        parts: [],
-      },
-      correctAnswer: q.correctAnswer,
-    };
-  } else {
-    // short_answer
-    answerData = {
-      acceptedAnswers: [q.correctAnswer, ...(q.alternativeAnswers || [])].filter(Boolean),
-      correctAnswer: q.correctAnswer,
-      alternativeAnswers: q.alternativeAnswers || [],
-    };
-  }
+// Helper: Convert Question object to Clean/Core Database row format (without extra optional columns)
+export const questionToDbRowClean = (q: Question, competitionId: string, orderIndex: number) => {
+  const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.filter(Boolean) : [];
+  const codeVal = q.code || q.id || 'Q';
 
   return {
     id: String(q.id),
     competition_id: competitionId,
-    code: q.code || q.id,
+    code: codeVal,
+    title: codeVal,
+    question_type: q.type || 'short_answer',
     type: q.type || 'short_answer',
+    prompt: q.questionText || '',
     question_text: q.questionText || '',
+    correct_answer: q.correctAnswer || '',
+    alternative_answers: alts,
+    unit: q.unitHint || '',
+    unit_hint: q.unitHint || '',
+    explanation: q.explanation || '',
     points: typeof q.points === 'number' ? q.points : 10,
     category: q.category || '',
-    explanation: q.explanation || '',
-    unit_hint: q.unitHint || '',
-    time_limit_seconds: q.timeLimitSeconds || null,
     order_index: orderIndex,
-    answer_data: answerData,
+    time_limit_seconds: q.timeLimitSeconds || null,
+    options: q.options || null,
+    correct_option_id: q.correctOptionId || null,
+    statement_config: q.statementConfig || null,
+    multi_part_config: q.multiPartConfig || null,
   };
+};
+
+// Helper: Convert Question object to minimal safe columns row format
+export const questionToDbRowMinimal = (q: Question, competitionId: string, orderIndex: number) => {
+  const codeVal = q.code || q.id || 'Q';
+  return {
+    id: String(q.id),
+    competition_id: competitionId,
+    code: codeVal,
+    title: codeVal,
+    prompt: q.questionText || '',
+    question_text: q.questionText || '',
+    correct_answer: q.correctAnswer || '',
+    order_index: orderIndex,
+  };
+};
+
+// Dynamic adaptive question row builder
+export const buildAdaptiveQuestionRow = (
+  q: Question,
+  competitionId: string,
+  orderIndex: number,
+  excludeCols: Set<string> = unsupportedQuestionColumns
+): Record<string, any> => {
+  const base = questionToDbRowDirect(q, competitionId, orderIndex);
+  const row: Record<string, any> = { ...base };
+
+  for (const col of excludeCols) {
+    delete row[col];
+  }
+
+  // Ensure mandatory columns are never omitted
+  const codeVal = q.code || q.id || 'Q';
+  if (!row.id) row.id = String(q.id);
+  if (!row.competition_id) row.competition_id = competitionId;
+  if (!row.code) row.code = codeVal;
+  if (!row.title) row.title = codeVal;
+
+  return row;
 };
 
 // Default export mapper
@@ -248,21 +280,35 @@ export const dbRowToQuestion = (row: any): Question => {
     '';
 
   // Extract alternative answers with multi-field fallback
+  let rawAlts = row.alternative_answers;
+  if (typeof rawAlts === 'string') {
+    try {
+      rawAlts = JSON.parse(rawAlts);
+    } catch {
+      rawAlts = rawAlts.split(',').map((s: string) => s.trim());
+    }
+  }
+
   let alternativeAnswers: string[] =
-    row.alternative_answers ||
-    answerData.alternativeAnswers ||
-    (answerData.acceptedAnswers && answerData.acceptedAnswers.length > 1
+    (Array.isArray(rawAlts) ? rawAlts : null) ||
+    (Array.isArray(answerData.alternativeAnswers) ? answerData.alternativeAnswers : null) ||
+    (Array.isArray(answerData.acceptedAnswers) && answerData.acceptedAnswers.length > 1
       ? answerData.acceptedAnswers.slice(1)
       : []) ||
     [];
 
   // If short_answer and acceptedAnswers exists, normalize
-  if (type === 'short_answer' && answerData.acceptedAnswers && answerData.acceptedAnswers.length > 0) {
+  if (type === 'short_answer' && Array.isArray(answerData.acceptedAnswers) && answerData.acceptedAnswers.length > 0) {
     if (!correctAnswer) correctAnswer = answerData.acceptedAnswers[0];
     if (alternativeAnswers.length === 0 && answerData.acceptedAnswers.length > 1) {
       alternativeAnswers = answerData.acceptedAnswers.slice(1);
     }
   }
+
+  // Ensure clean string array
+  const sanitizedAlts = (Array.isArray(alternativeAnswers) ? alternativeAnswers : [])
+    .map((s: any) => (typeof s === 'string' ? s.trim() : String(s || '')))
+    .filter(Boolean);
 
   // Extract options (can be in column or inside answer_data)
   const options = row.options || answerData.options || undefined;
@@ -283,7 +329,7 @@ export const dbRowToQuestion = (row: any): Question => {
     type: type,
     questionText: row.question_text || row.prompt || row.text || row.title || '',
     correctAnswer: String(correctAnswer || ''),
-    alternativeAnswers: Array.isArray(alternativeAnswers) ? alternativeAnswers : [],
+    alternativeAnswers: sanitizedAlts,
     points: Number(row.points) || 10,
     category: row.category || row.topic || undefined,
     explanation: row.explanation || row.pembahasan || undefined,
@@ -323,6 +369,81 @@ export const fetchQuestionsFromDb = async (competitionId: string): Promise<Quest
 };
 
 /**
+ * Adaptive question upsert that gracefully handles differences in Supabase schemas
+ * by dynamically stripping out missing columns when PGRST204 errors are encountered.
+ */
+export const adaptiveUpsertQuestions = async (
+  supabase: any,
+  questions: { question: Question; orderIndex: number }[],
+  competitionId: string
+): Promise<{ success: boolean; error?: string }> => {
+  if (!questions || questions.length === 0) return { success: true };
+
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    const rows = questions.map(({ question, orderIndex }) =>
+      buildAdaptiveQuestionRow(question, competitionId, orderIndex, unsupportedQuestionColumns)
+    );
+
+    const { error } = await supabase.from('questions').upsert(rows);
+    if (!error) {
+      return { success: true };
+    }
+
+    // Check for missing column error (PGRST204 or PostgreSQL column error)
+    if (error.code === 'PGRST204' || (error.message && error.message.toLowerCase().includes('column'))) {
+      const match =
+        error.message.match(/Could not find the '([^']+)' column/i) ||
+        error.message.match(/column "([^"]+)" of relation/i) ||
+        error.message.match(/column '([^']+)'/i);
+
+      if (match && match[1]) {
+        const missingCol = match[1];
+        console.warn(`[Supabase Adaptive Upsert] Kolom '${missingCol}' tidak ada di tabel 'questions'. Mengabaikan kolom ini.`);
+        unsupportedQuestionColumns.add(missingCol);
+        continue;
+      }
+
+      // If cannot parse specific column from message, sequentially remove optional non-core columns
+      const candidateRemovals = [
+        'alternative_answers',
+        'statement_config',
+        'multi_part_config',
+        'options',
+        'correct_option_id',
+        'unit_hint',
+        'question_type',
+        'question_text',
+        'prompt',
+        'unit',
+        'explanation',
+        'time_limit_seconds',
+        'points',
+        'category',
+      ];
+      let removedAny = false;
+      for (const col of candidateRemovals) {
+        if (!unsupportedQuestionColumns.has(col)) {
+          unsupportedQuestionColumns.add(col);
+          removedAny = true;
+          break;
+        }
+      }
+      if (removedAny) continue;
+    }
+
+    // For any other error (or if all candidate columns tried)
+    console.error('[Supabase Adaptive Upsert Error]', error);
+    return { success: false, error: error.message };
+  }
+
+  return { success: false, error: 'Gagal menyimpan soal ke Supabase setelah beberapa percobaan.' };
+};
+
+/**
  * Insert or update a single Question in Supabase directly
  */
 export const insertOrUpdateQuestionInDb = async (
@@ -336,25 +457,11 @@ export const insertOrUpdateQuestionInDb = async (
   }
 
   try {
-    const directRow = questionToDbRowDirect(question, competitionId, orderIndex);
-    const { error: directErr } = await supabase.from('questions').upsert(directRow);
-
-    if (directErr) {
-      if (directErr.code === 'PGRST204' || directErr.message?.includes('column')) {
-        const altRow = questionToDbRowAnswerData(question, competitionId, orderIndex);
-        const { error: altErr } = await supabase.from('questions').upsert(altRow);
-        if (altErr) {
-          console.error('[Supabase insertOrUpdateQuestion alt error]', altErr);
-          return { success: false, error: altErr.message };
-        }
-      } else {
-        console.error('[Supabase insertOrUpdateQuestion error]', directErr);
-        return { success: false, error: directErr.message };
-      }
+    const res = await adaptiveUpsertQuestions(supabase, [{ question, orderIndex }], competitionId);
+    if (res.success) {
+      console.info(`[Supabase Bank Soal] Soal ${question.code} (${question.id}) berhasil disimpan.`);
     }
-
-    console.info(`[Supabase Bank Soal] Soal ${question.code} (${question.id}) berhasil disimpan.`);
-    return { success: true };
+    return res;
   } catch (err: any) {
     console.error('[Supabase insertOrUpdateQuestion exception]', err);
     return { success: false, error: err?.message || 'Gagal menyimpan soal.' };
@@ -407,24 +514,10 @@ export const saveAllQuestionsToDb = async (
 
   try {
     if (questions.length > 0) {
-      // First attempt direct column schema (prompt, question_type, options, etc.)
-      const directRows = questions.map((q, idx) => questionToDbRowDirect(q, competitionId, idx));
-      const { error: directErr } = await supabase.from('questions').upsert(directRows);
-
-      if (directErr) {
-        // If column mismatch error (PGRST204), try AnswerData format
-        if (directErr.code === 'PGRST204' || directErr.message?.includes('column')) {
-          console.warn('[Supabase saveAllQuestions] Retrying with answer_data format...');
-          const altRows = questions.map((q, idx) => questionToDbRowAnswerData(q, competitionId, idx));
-          const { error: altErr } = await supabase.from('questions').upsert(altRows);
-          if (altErr) {
-            console.error('[Supabase saveAllQuestions alt upsert error]', altErr);
-            return { success: false, error: altErr.message };
-          }
-        } else {
-          console.error('[Supabase saveAllQuestions upsert error]', directErr);
-          return { success: false, error: directErr.message };
-        }
+      const qItems = questions.map((question, orderIndex) => ({ question, orderIndex }));
+      const res = await adaptiveUpsertQuestions(supabase, qItems, competitionId);
+      if (!res.success) {
+        return res;
       }
     }
 
