@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GameState, Team, Question, GameSettings, PlaylistMode } from './types';
+import { GameState, Team, Question, GameSettings, PlaylistMode, TeamCardAssignment } from './types';
 import { getInitialGameState, saveGameState, DEFAULT_SETTINGS, getStoredRoomId, setStoredRoomId } from './utils/storage';
 import {
   generateTeamCardDecks,
@@ -34,6 +34,7 @@ import {
   insertDbActivityLog,
   subscribeToRoomRealtime,
   setCompetitionOrderLockedInDb,
+  fetchQuestionsFromDb,
 } from './services/dbService';
 
 export default function App() {
@@ -122,7 +123,15 @@ export default function App() {
   const loadRoomData = useCallback(async (roomId: string, isBackgroundSync: boolean = false) => {
     if (!isBackgroundSync) setIsSyncing(true);
     try {
-      const cloudState = await loadCompetitionFromDb(roomId);
+      const [cloudState, allMasterQuestions] = await Promise.all([
+        loadCompetitionFromDb(roomId),
+        fetchQuestionsFromDb(roomId),
+      ]);
+
+      if (allMasterQuestions && allMasterQuestions.length > 0) {
+        setMasterQuestions(allMasterQuestions);
+      }
+
       if (cloudState) {
         setGameState((prev) => {
           // If match is running, compute real-time remaining from started_at
@@ -132,17 +141,45 @@ export default function App() {
             calculatedRemaining = Math.max(0, cloudState.timeRemainingSeconds - elapsed);
           }
 
-          if (cloudState.questions && cloudState.questions.length > 0) {
-            setMasterQuestions(cloudState.questions);
+          // Active master pool to resolve questions from
+          const masterPool =
+            allMasterQuestions && allMasterQuestions.length > 0
+              ? allMasterQuestions
+              : masterQuestions && masterQuestions.length > 0
+              ? masterQuestions
+              : DEMO_QUESTIONS;
+
+          // Determine official active match questions snapshot
+          let finalQuestions: Question[] = [];
+
+          const activeIds =
+            cloudState.activeQuestionIds && cloudState.activeQuestionIds.length > 0
+              ? cloudState.activeQuestionIds
+              : cloudState.settings.customQuestionIds && cloudState.settings.customQuestionIds.length > 0
+              ? cloudState.settings.customQuestionIds
+              : [];
+
+          if (activeIds.length > 0) {
+            const qMap = new Map(masterPool.map((q) => [q.id, q]));
+            finalQuestions = activeIds.map((id) => qMap.get(id)).filter(Boolean) as Question[];
           }
 
-          // Protect questions: if cloud has questions, use them
-          const finalQuestions =
-            cloudState.questions && cloudState.questions.length > 0
-              ? cloudState.questions
-              : prev.questions && prev.questions.length > 0
-              ? prev.questions
-              : DEMO_QUESTIONS;
+          if (finalQuestions.length === 0) {
+            if (cloudState.questions && cloudState.questions.length > 0) {
+              finalQuestions = cloudState.questions;
+            } else {
+              finalQuestions = filterQuestionsByPlaylist(masterPool, {
+                playlistMode: cloudState.settings.playlistMode,
+                selectedTopic: cloudState.settings.selectedTopic,
+                selectedTopics: cloudState.settings.selectedTopics,
+                customQuestionIds: cloudState.settings.customQuestionIds,
+              });
+            }
+          }
+
+          if (finalQuestions.length === 0) {
+            finalQuestions = prev.questions && prev.questions.length > 0 ? prev.questions : DEMO_QUESTIONS;
+          }
 
           // Protect teams: if cloud has teams, use them
           const finalTeams =
@@ -152,15 +189,35 @@ export default function App() {
               ? prev.teams
               : INITIAL_TEAMS;
 
-          // Ensure decks are generated if empty
+          // Ensure decks are generated & validated for the active snapshot only
           let finalDecks = cloudState.teamCardDecks;
           if (!finalDecks || Object.keys(finalDecks).length === 0) {
             finalDecks = generateTeamCardDecks(finalTeams, finalQuestions);
+          } else {
+            // Check if existing deck cards match the active snapshot
+            const validQIds = new Set(finalQuestions.map((q) => q.id));
+            const validatedDecks: Record<string, TeamCardAssignment[]> = {};
+            let deckMismatch = false;
+
+            Object.entries(finalDecks).forEach(([tId, cards]) => {
+              const matchedCards = cards.filter((c) => validQIds.has(c.questionId));
+              if (matchedCards.length !== finalQuestions.length) {
+                deckMismatch = true;
+              }
+              validatedDecks[tId] = matchedCards;
+            });
+
+            if (deckMismatch && !cloudState.orderLocked) {
+              finalDecks = generateTeamCardDecks(finalTeams, finalQuestions);
+            } else if (Object.keys(validatedDecks).length > 0 && !deckMismatch) {
+              finalDecks = validatedDecks;
+            }
           }
 
           return {
             ...cloudState,
-            questions: finalQuestions,
+            activeQuestionIds: finalQuestions.map((q) => q.id),
+            questions: finalQuestions, // ACTIVE MATCH SNAPSHOT ONLY
             teams: finalTeams,
             teamCardDecks: finalDecks,
             timeRemainingSeconds: calculatedRemaining,
@@ -181,7 +238,7 @@ export default function App() {
         setIsInitialLoading(false);
       }
     }
-  }, []);
+  }, [masterQuestions]);
 
   // Load room data on mount and whenever currentRoomId changes
   useEffect(() => {
@@ -686,7 +743,15 @@ export default function App() {
       customQuestionIds: options.customQuestionIds,
     });
 
+    const activeQuestionIds = snapshotQuestions.map((q) => q.id);
     const newDecks = generateTeamCardDecks(gameState.teams, snapshotQuestions);
+
+    console.log('[PLAYLIST]');
+    console.log('selected playlist:', options.playlistName || options.selectedTopic || playlistMode);
+    console.log('filtered questions:', snapshotQuestions.map((q) => q.code));
+    console.log('activeQuestionIds:', activeQuestionIds);
+    console.log('snapshot count:', snapshotQuestions.length);
+    console.log('deck count:', Object.keys(newDecks).map((tId) => `${tId}: ${newDecks[tId].length}`));
 
     setGameState((prev) => {
       const nextSettings: GameSettings = {
@@ -701,11 +766,12 @@ export default function App() {
             : 'Semua Soal Master'),
         selectedTopic: options.selectedTopic || '',
         selectedTopics: options.selectedTopics || [],
-        customQuestionIds: options.customQuestionIds || [],
+        customQuestionIds: activeQuestionIds,
       };
 
       const nextState: GameState = {
         ...prev,
+        activeQuestionIds,
         settings: nextSettings,
         questions: snapshotQuestions, // MATCH QUESTION SNAPSHOT
         teamCardDecks: newDecks,
@@ -729,29 +795,37 @@ export default function App() {
   const handleUpdateSettings = (newSettings: GameSettings) => {
     const topicChanged = (newSettings.selectedTopic || '') !== (gameState.settings.selectedTopic || '');
     const modeChanged = (newSettings.playlistMode || 'all') !== (gameState.settings.playlistMode || 'all');
-    
-    if ((topicChanged || modeChanged) && gameState.orderLocked) {
+    const customIdsChanged =
+      JSON.stringify(newSettings.customQuestionIds || []) !== JSON.stringify(gameState.settings.customQuestionIds || []);
+
+    if ((topicChanged || modeChanged || customIdsChanged) && gameState.orderLocked) {
       console.warn('[Changing playlist or topic blocked because order is locked]');
       return;
     }
 
     let nextQuestions = gameState.questions;
     let nextDecks = gameState.teamCardDecks;
+    let nextActiveIds = gameState.activeQuestionIds || gameState.questions.map((q) => q.id);
 
-    if ((topicChanged || modeChanged) && !gameState.orderLocked) {
+    if ((topicChanged || modeChanged || customIdsChanged) && !gameState.orderLocked) {
       nextQuestions = filterQuestionsByPlaylist(masterQuestions, {
         playlistMode: newSettings.playlistMode,
         selectedTopic: newSettings.selectedTopic,
         selectedTopics: newSettings.selectedTopics,
         customQuestionIds: newSettings.customQuestionIds,
       });
+      nextActiveIds = nextQuestions.map((q) => q.id);
       nextDecks = generateTeamCardDecks(gameState.teams, nextQuestions);
     }
 
     setGameState((prev) => {
       const nextState: GameState = {
         ...prev,
-        settings: newSettings,
+        activeQuestionIds: nextActiveIds,
+        settings: {
+          ...newSettings,
+          customQuestionIds: nextActiveIds,
+        },
         questions: nextQuestions,
         teamCardDecks: nextDecks,
         timeRemainingSeconds: prev.status === 'ready' ? newSettings.durationMinutes * 60 : prev.timeRemainingSeconds,

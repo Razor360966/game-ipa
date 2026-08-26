@@ -1,3 +1,14 @@
+export type UserRole = 'admin' | 'teacher';
+
+export interface UserProfile {
+  id: string; // UUID from auth.users
+  email: string;
+  name?: string;
+  role: UserRole;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export type TeamColor = 'blue' | 'emerald' | 'amber' | 'rose' | 'purple' | 'cyan' | 'orange' | 'indigo';
 
 export interface Team {
@@ -101,6 +112,13 @@ export interface TeamCardDeck {
   cards: TeamCardAssignment[];
 }
 
+export interface MatchPlaylistConfig {
+  mode: PlaylistMode; // 'all' | 'topic' | 'custom'
+  selectedTopic?: string;
+  selectedTopics?: string[];
+  questionIds: string[]; // explicit snapshot list of question IDs
+}
+
 export interface GameSettings {
   matchTitle: string;
   roundName: string;
@@ -109,6 +127,7 @@ export interface GameSettings {
   selectedTopic?: string; // Single topic mode (e.g. "Alat Ukur")
   selectedTopics?: string[]; // Multi-topic list for custom playlist mode
   customQuestionIds?: string[]; // Explicit list of question IDs included in custom playlist
+  playlist?: MatchPlaylistConfig; // Official snapshot configuration for match
   durationMinutes: number; // Durasi keseluruhan game dalam menit
   questionTimeLimitSeconds: number; // Batas waktu menjawab khusus per soal (detik), misal 30 detik
   enableQuestionTimer: boolean; // Aktifkan/nonaktifkan batas waktu khusus per soal
@@ -136,11 +155,13 @@ export interface ActivityLog {
 
 export interface GameState {
   competitionId?: string; // Room ID e.g. "MBB-2026-001"
+  createdBy?: string; // UUID of owner teacher / admin from auth.users
   startedAt?: number | null; // Server/host timestamp when timer started running
   orderLocked?: boolean; // Single source of truth for question order lock status (defaults to false)
+  activeQuestionIds?: string[]; // Explicit snapshot list of question IDs actively used in match
   settings: GameSettings;
   teams: Team[];
-  questions: Question[];
+  questions: Question[]; // ACTIVE MATCH QUESTION SNAPSHOT
   teamCardDecks: Record<string, TeamCardAssignment[]>; // key is teamId
   status: GameStatus;
   timeRemainingSeconds: number;

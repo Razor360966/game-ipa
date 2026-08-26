@@ -1685,12 +1685,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 currentSettings={matchForm}
                 isOrderLocked={isOrderLocked}
                 onApplyPlaylist={(mode, opts) => {
+                  setMatchForm((prev) => ({
+                    ...prev,
+                    playlistMode: mode,
+                    playlistName: opts.playlistName,
+                    selectedTopic: opts.selectedTopic || '',
+                    selectedTopics: opts.selectedTopics || [],
+                    customQuestionIds: opts.customQuestionIds || [],
+                  }));
                   if (onApplyPlaylist) {
                     onApplyPlaylist(mode, opts);
                   } else {
                     handleTopicChange(opts.selectedTopic || '');
                   }
                 }}
+                onToggleOrderLock={onToggleOrderLock as any}
                 onShowToast={showToast}
               />
 
@@ -2386,12 +2395,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               currentSettings={matchForm}
               isOrderLocked={isOrderLocked}
               onApplyPlaylist={(mode, opts) => {
+                setMatchForm((prev) => ({
+                  ...prev,
+                  playlistMode: mode,
+                  playlistName: opts.playlistName,
+                  selectedTopic: opts.selectedTopic || '',
+                  selectedTopics: opts.selectedTopics || [],
+                  customQuestionIds: opts.customQuestionIds || [],
+                }));
                 if (onApplyPlaylist) {
                   onApplyPlaylist(mode, opts);
                 } else {
                   handleTopicChange(opts.selectedTopic || '');
                 }
               }}
+              onToggleOrderLock={onToggleOrderLock as any}
               onShowToast={showToast}
             />
 
