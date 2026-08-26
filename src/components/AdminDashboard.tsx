@@ -207,7 +207,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     correctAnswer: '',
     alternativeAnswersText: '',
     points: 10,
-    category: 'Pengukuran Fisika',
+    category: '',
     unitHint: '',
     explanation: '',
     options: [
@@ -456,7 +456,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       correctAnswer: '',
       alternativeAnswersText: '',
       points: settings.pointsPerCorrect || 10,
-      category: 'Pengukuran Fisika',
+      category: '',
       unitHint: '',
       explanation: '',
       options: [
@@ -526,7 +526,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       correctAnswer: question.correctAnswer || '',
       alternativeAnswersText: (question.alternativeAnswers || []).join(', '),
       points: question.points || 10,
-      category: question.category || 'Pengukuran Fisika',
+      category: question.category ?? '',
       unitHint: question.unitHint || '',
       explanation: question.explanation || '',
       options: resolvedOptions,
@@ -655,6 +655,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setIsSavingQuestion(true);
     try {
       const isEdit = Boolean(editingQuestionId);
+      const finalCategory = questionForm.category?.trim() || undefined;
       let questionObj: Question;
 
       if (editingQuestionId) {
@@ -667,7 +668,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           correctAnswer: finalCorrectAnswer,
           alternativeAnswers: finalAltAnswers,
           points: Number(questionForm.points),
-          category: questionForm.category.trim(),
+          category: finalCategory,
           explanation: questionForm.explanation.trim(),
           ...extraData,
         };
@@ -679,11 +680,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           correctAnswer: finalCorrectAnswer,
           alternativeAnswers: finalAltAnswers,
           points: Number(questionForm.points),
-          category: questionForm.category.trim(),
+          category: finalCategory,
           explanation: questionForm.explanation.trim(),
           ...extraData,
         };
       }
+
+      console.log('[MBB CATEGORY DEBUG] Form category:', questionForm.category);
+      console.log('[MBB CATEGORY DEBUG] Question category:', questionObj.category);
 
       if (onSaveQuestionDirect) {
         const res = await onSaveQuestionDirect(questionObj, isEdit);
@@ -2278,17 +2282,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         isOrderLocked ? 'opacity-60 cursor-not-allowed bg-slate-900/50' : ''
                       }`}
                     >
-                      <option value="" className="bg-slate-900 text-white">
-                        Semua Topik ({masterPool.length} Soal Master)
-                      </option>
-                      {availableTopics.map((topic) => {
-                        const count = masterPool.filter((q) => q.category === topic).length;
-                        return (
-                          <option key={topic} value={topic} className="bg-slate-900 text-white">
-                            Topik: {topic} ({count} Soal)
-                          </option>
-                        );
-                      })}
+                      {autoPlaylists.map((pl) => (
+                        <option key={pl.id} value={pl.isDefaultAll ? '' : pl.name} className="bg-slate-900 text-white">
+                          {pl.icon ? `${pl.icon} ` : ''}{pl.name} — {pl.count} Soal
+                        </option>
+                      ))}
                     </select>
                     <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
                       ▼
@@ -3693,9 +3691,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <input
                     type="text"
                     list="category-topic-options"
-                    value={questionForm.category}
-                    onChange={(e) => setQuestionForm({ ...questionForm, category: e.target.value })}
-                    placeholder="Ketik topik baru atau pilih (misal: Suhu)"
+                    value={questionForm.category ?? ''}
+                    onChange={(e) => setQuestionForm((prev) => ({ ...prev, category: e.target.value }))}
+                    placeholder="Contoh: Suhu atau Pengukuran"
                     className="w-full bg-slate-950 border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
                   />
                   <datalist id="category-topic-options">

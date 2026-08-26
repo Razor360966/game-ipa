@@ -118,13 +118,7 @@ export default function App() {
           }
 
           if (cloudState.questions && cloudState.questions.length > 0) {
-            setMasterQuestions((prevMaster) => {
-              const masterMap = new Map<string, Question>();
-              DEMO_QUESTIONS.forEach((q) => masterMap.set(q.id, q));
-              prevMaster.forEach((q) => masterMap.set(q.id, q));
-              cloudState.questions.forEach((q) => masterMap.set(q.id, q));
-              return Array.from(masterMap.values());
-            });
+            setMasterQuestions(cloudState.questions);
           }
 
           // Protect questions: if cloud has questions, use them
@@ -828,6 +822,13 @@ export default function App() {
       };
     }
 
+    console.log('[MBB CATEGORY SAVE DIRECT]', {
+      id: question.id,
+      code: question.code,
+      category: question.category,
+      isEdit,
+    });
+
     const nextMaster = isEdit
       ? masterQuestions.map((q) => (q.id === question.id ? question : q))
       : [...masterQuestions, question];
@@ -850,12 +851,24 @@ export default function App() {
           // Update the question inside match snapshot if present
           nextQuestions = prev.questions.map((q) => (q.id === question.id ? question : q));
         } else {
-          // If match order is locked or snapshot is active, adding to master doesn't alter snapshot
+          // If match order is locked, adding to master doesn't alter snapshot
           if (prev.orderLocked) {
             nextQuestions = prev.questions;
           } else {
-            // Keep current match questions snapshot stable unless playlist is re-applied
-            nextQuestions = prev.questions;
+            // If active playlist is 'all' (or not set), include new question in active match questions
+            const mode = prev.settings.playlistMode || 'all';
+            if (mode === 'all') {
+              nextQuestions = [...prev.questions, question];
+            } else if (
+              mode === 'topic' &&
+              prev.settings.selectedTopic &&
+              question.category &&
+              question.category.trim().toLowerCase() === prev.settings.selectedTopic.trim().toLowerCase()
+            ) {
+              nextQuestions = [...prev.questions, question];
+            } else {
+              nextQuestions = prev.questions;
+            }
           }
         }
 

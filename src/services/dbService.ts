@@ -174,11 +174,13 @@ END $$;
 
 // Track columns that are confirmed not existing in the schema cache to avoid PGRST204 errors
 const unsupportedQuestionColumns = new Set<string>();
+const unsupportedCompetitionColumns = new Set<string>();
 
 // Helper: Convert Question object to Direct Database row format (prompt, question_type, options, etc.)
 export const questionToDbRowDirect = (q: Question, competitionId: string, orderIndex: number) => {
   const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
   const codeVal = q.code || q.id || 'Q';
+  const catVal = typeof q.category === 'string' && q.category.trim() ? q.category.trim() : null;
 
   // For short_answer, preserve alternativeAnswers in options jsonb as universal fallback
   let optionsPayload: any = q.options || null;
@@ -207,7 +209,7 @@ export const questionToDbRowDirect = (q: Question, competitionId: string, orderI
     unit_hint: q.unitHint || '',
     explanation: q.explanation || '',
     points: typeof q.points === 'number' ? q.points : 10,
-    category: q.category || '',
+    category: catVal,
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
     options: optionsPayload,
@@ -221,6 +223,7 @@ export const questionToDbRowDirect = (q: Question, competitionId: string, orderI
 export const questionToDbRowClean = (q: Question, competitionId: string, orderIndex: number) => {
   const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
   const codeVal = q.code || q.id || 'Q';
+  const catVal = typeof q.category === 'string' && q.category.trim() ? q.category.trim() : null;
 
   let optionsPayload: any = q.options || null;
   if (!optionsPayload && q.type === 'short_answer' && alts.length > 0) {
@@ -242,7 +245,7 @@ export const questionToDbRowClean = (q: Question, competitionId: string, orderIn
     unit_hint: q.unitHint || '',
     explanation: q.explanation || '',
     points: typeof q.points === 'number' ? q.points : 10,
-    category: q.category || '',
+    category: catVal,
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
     options: optionsPayload,
@@ -410,7 +413,12 @@ export const dbRowToQuestion = (row: any): Question => {
     correctAnswer: String(correctAnswer || ''),
     alternativeAnswers: sanitizedAlts,
     points: Number(row.points) || 10,
-    category: row.category || row.topic || undefined,
+    category:
+      typeof row.category === 'string' && row.category.trim()
+        ? row.category.trim()
+        : typeof row.topic === 'string' && row.topic.trim()
+        ? row.topic.trim()
+        : undefined,
     explanation: row.explanation || row.pembahasan || undefined,
     unitHint: row.unit_hint || row.unit || undefined,
     options: resolvedOptions,
@@ -467,6 +475,8 @@ export const adaptiveUpsertQuestions = async (
     const rows = questions.map(({ question, orderIndex }) =>
       buildAdaptiveQuestionRow(question, competitionId, orderIndex, unsupportedQuestionColumns)
     );
+
+    console.log('[MBB CATEGORY DB PAYLOAD]', rows.map((r) => ({ id: r.id, code: r.code, category: r.category })));
 
     const { error } = await supabase.from('questions').upsert(rows);
     if (!error) {
@@ -581,11 +591,12 @@ export const deleteQuestionFromDb = async (
 };
 
 /**
- * Save all questions array to Supabase with pruning of removed questions
+ * Save all questions array to Supabase
  */
 export const saveAllQuestionsToDb = async (
   competitionId: string,
-  questions: Question[]
+  questions: Question[],
+  pruneDeleted: boolean = false
 ): Promise<{ success: boolean; error?: string }> => {
   const supabase = getSupabase();
   if (!supabase || !competitionId) {
@@ -601,27 +612,29 @@ export const saveAllQuestionsToDb = async (
       }
     }
 
-    // Clean up any questions from this competition that are no longer in the list
-    const currentIds = questions.map((q) => String(q.id));
-    const { data: existingData, error: fetchErr } = await supabase
-      .from('questions')
-      .select('id')
-      .eq('competition_id', competitionId);
+    // Clean up only if explicitly requested (e.g. bulk full-bank replacement)
+    if (pruneDeleted) {
+      const currentIds = questions.map((q) => String(q.id));
+      const { data: existingData, error: fetchErr } = await supabase
+        .from('questions')
+        .select('id')
+        .eq('competition_id', competitionId);
 
-    if (!fetchErr && existingData && existingData.length > 0) {
-      const idsToDelete = existingData
-        .filter((item) => !currentIds.includes(String(item.id)))
-        .map((item) => item.id);
+      if (!fetchErr && existingData && existingData.length > 0) {
+        const idsToDelete = existingData
+          .filter((item) => !currentIds.includes(String(item.id)))
+          .map((item) => item.id);
 
-      if (idsToDelete.length > 0) {
-        const { error: delErr } = await supabase
-          .from('questions')
-          .delete()
-          .eq('competition_id', competitionId)
-          .in('id', idsToDelete);
+        if (idsToDelete.length > 0) {
+          const { error: delErr } = await supabase
+            .from('questions')
+            .delete()
+            .eq('competition_id', competitionId)
+            .in('id', idsToDelete);
 
-        if (delErr) {
-          console.warn('[Supabase prune deleted questions warning]', delErr);
+          if (delErr) {
+            console.warn('[Supabase prune deleted questions warning]', delErr);
+          }
         }
       }
     }
@@ -818,6 +831,99 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
 };
 
 /**
+ * Dynamic adaptive competition row builder that strips missing columns
+ */
+export const buildAdaptiveCompetitionRow = (
+  compRow: Record<string, any>,
+  excludeCols: Set<string> = unsupportedCompetitionColumns
+): Record<string, any> => {
+  const row = { ...compRow };
+  for (const col of excludeCols) {
+    delete row[col];
+  }
+  return row;
+};
+
+/**
+ * Adaptive competition upsert that gracefully handles differences in Supabase schemas
+ * by dynamically stripping out missing columns (like order_locked, playlist_mode, etc.)
+ * when PGRST204 errors are encountered.
+ */
+export const adaptiveUpsertCompetition = async (
+  supabase: any,
+  compRow: Record<string, any>
+): Promise<{ success: boolean; error?: any }> => {
+  let attempts = 0;
+  const maxAttempts = 15;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    const rowToSave = buildAdaptiveCompetitionRow(compRow, unsupportedCompetitionColumns);
+
+    const { error } = await supabase.from('competitions').upsert(rowToSave);
+    if (!error) {
+      return { success: true };
+    }
+
+    // Check for missing column error (PGRST204 or PostgreSQL column error)
+    if (error.code === 'PGRST204' || (error.message && error.message.toLowerCase().includes('column'))) {
+      const match =
+        error.message.match(/Could not find the '([^']+)' column/i) ||
+        error.message.match(/column "([^"]+)" of relation/i) ||
+        error.message.match(/column '([^']+)'/i);
+
+      if (match && match[1]) {
+        const missingCol = match[1];
+        console.warn(`[Supabase Adaptive Comp] Kolom '${missingCol}' belum ada di tabel 'competitions'. Mengabaikan kolom ini secara adaptif.`);
+        unsupportedCompetitionColumns.add(missingCol);
+        continue;
+      }
+
+      // If specific column name cannot be parsed from regex, strip optional candidate columns sequentially
+      const candidateCompRemovals = [
+        'order_locked',
+        'playlist_mode',
+        'playlist_name',
+        'selected_topics',
+        'custom_question_ids',
+        'selected_topic',
+        'enable_question_timer',
+        'question_time_limit_seconds',
+        'wrong_answer_rule',
+        'case_sensitive',
+        'sound_enabled',
+        'last_evaluation',
+        'active_since',
+        'active_card_number',
+        'active_team_id',
+        'started_at',
+        'time_remaining_seconds',
+      ];
+      let removedAny = false;
+      for (const col of candidateCompRemovals) {
+        if (!unsupportedCompetitionColumns.has(col) && rowToSave[col] !== undefined) {
+          unsupportedCompetitionColumns.add(col);
+          removedAny = true;
+          break;
+        }
+      }
+      if (removedAny) continue;
+    }
+
+    // If it is table missing (PGRST205)
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      console.warn('[Save Comp Supabase] Tabel belum siap di Supabase. Jalankan skema SQL di SQL Editor Supabase untuk mengaktifkan sinkronisasi.');
+      return { success: false, error };
+    }
+
+    console.error('[Save Comp Error]', error);
+    return { success: false, error };
+  }
+
+  return { success: false, error: new Error('Gagal menyimpan kompetisi ke Supabase setelah beberapa percobaan.') };
+};
+
+/**
  * Save complete GameState to Supabase (Full sync / migration)
  */
 export const saveCompetitionToDb = async (state: GameState, competitionId: string): Promise<boolean> => {
@@ -827,7 +933,7 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
   try {
     const roomId = competitionId || state.competitionId || DEFAULT_ROOM_ID;
 
-    // 1. Upsert competition
+    // 1. Upsert competition using adaptive column stripper
     const compRow: Record<string, any> = {
       id: roomId,
       title: state.settings.matchTitle,
@@ -856,34 +962,8 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
       updated_at: new Date().toISOString(),
     };
 
-    let { error: compErr } = await supabase.from('competitions').upsert(compRow);
-    if (
-      compErr &&
-      (compErr.message?.includes('order_locked') ||
-        compErr.message?.includes('selected_topic') ||
-        compErr.message?.includes('playlist_mode') ||
-        compErr.message?.includes('playlist_name') ||
-        compErr.message?.includes('selected_topics') ||
-        compErr.message?.includes('custom_question_ids'))
-    ) {
-      // Fallback if playlist or order_locked columns not yet migrated in old remote DB
-      const fallbackRow = { ...compRow };
-      if (compErr.message?.includes('order_locked')) delete fallbackRow.order_locked;
-      if (compErr.message?.includes('selected_topic')) delete fallbackRow.selected_topic;
-      if (compErr.message?.includes('playlist_mode')) delete fallbackRow.playlist_mode;
-      if (compErr.message?.includes('playlist_name')) delete fallbackRow.playlist_name;
-      if (compErr.message?.includes('selected_topics')) delete fallbackRow.selected_topics;
-      if (compErr.message?.includes('custom_question_ids')) delete fallbackRow.custom_question_ids;
-      const res = await supabase.from('competitions').upsert(fallbackRow);
-      compErr = res.error;
-    }
-
-    if (compErr) {
-      if (compErr.code === 'PGRST205' || compErr.message?.includes('Could not find the table')) {
-        console.warn('[Save Comp Supabase] Tabel belum siap di Supabase. Jalankan skema SQL di SQL Editor Supabase untuk mengaktifkan sinkronisasi.');
-      } else {
-        console.error('[Save Comp Error]', compErr);
-      }
+    const compRes = await adaptiveUpsertCompetition(supabase, compRow);
+    if (!compRes.success) {
       return false;
     }
 
@@ -977,13 +1057,27 @@ export const updateDbGameState = async (
   if (!supabase || !competitionId) return;
 
   try {
-    await supabase
+    const cleanPatch: Record<string, any> = { ...patch, updated_at: new Date().toISOString() };
+    for (const col of unsupportedCompetitionColumns) {
+      delete cleanPatch[col];
+    }
+
+    const { error } = await supabase
       .from('competitions')
-      .update({
-        ...patch,
-        updated_at: new Date().toISOString(),
-      })
+      .update(cleanPatch)
       .eq('id', competitionId);
+
+    if (error && (error.code === 'PGRST204' || (error.message && error.message.toLowerCase().includes('column')))) {
+      const match =
+        error.message.match(/Could not find the '([^']+)' column/i) ||
+        error.message.match(/column "([^"]+)" of relation/i) ||
+        error.message.match(/column '([^']+)'/i);
+      if (match && match[1]) {
+        unsupportedCompetitionColumns.add(match[1]);
+        delete cleanPatch[match[1]];
+        await supabase.from('competitions').update(cleanPatch).eq('id', competitionId);
+      }
+    }
   } catch (err) {
     console.error('[updateDbGameState Error]', err);
   }
@@ -1146,6 +1240,11 @@ export const setCompetitionOrderLockedInDb = async (
   const supabase = getSupabase();
   if (!supabase) return { success: false, error: 'Supabase client tidak tersedia.' };
 
+  if (unsupportedCompetitionColumns.has('order_locked')) {
+    // Column not available on remote table yet, local state remains locked safely
+    return { success: true };
+  }
+
   try {
     const { error } = await supabase
       .from('competitions')
@@ -1156,6 +1255,11 @@ export const setCompetitionOrderLockedInDb = async (
       .eq('id', competitionId);
 
     if (error) {
+      if (error.code === 'PGRST204' || error.message?.includes('order_locked') || error.message?.includes('column')) {
+        console.warn(`[Supabase setOrderLocked] Kolom 'order_locked' belum ada di schema DB remote. Status kunci tetap diamankan secara lokal.`);
+        unsupportedCompetitionColumns.add('order_locked');
+        return { success: true };
+      }
       console.error('[setCompetitionOrderLockedInDb Error]', error);
       return { success: false, error: error.message };
     }
