@@ -20,7 +20,7 @@ import { PrintableCards } from './components/PrintableCards';
 import { GameOverModal } from './components/GameOverModal';
 import { AccessGate } from './components/AccessGate';
 import { AdminLoginModal } from './components/AdminLoginModal';
-import { isAdminAuthenticated, logoutAdmin } from './utils/auth';
+import { isAdminAuthenticated, logoutAdmin, getAdminSession, onAdminAuthStateChange } from './utils/auth';
 import { RefreshCw, Check, Copy, Share2 } from 'lucide-react';
 import {
   loadCompetitionFromDb,
@@ -60,10 +60,25 @@ export default function App() {
   // Master Question Bank (Full pool of questions across all categories)
   const [masterQuestions, setMasterQuestions] = useState<Question[]>(() => DEMO_QUESTIONS);
 
-  // Authentication State for Guru / Admin
+  // Authentication State for Guru / Admin (Supabase Cloud Auth)
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => isAdminAuthenticated());
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
   const [shareToastMessage, setShareToastMessage] = useState<string | null>(null);
+
+  // Supabase Auth session listener
+  useEffect(() => {
+    getAdminSession().then((session) => {
+      setIsAdminLoggedIn(!!session);
+    });
+
+    const { unsubscribe } = onAdminAuthStateChange((_event, session) => {
+      setIsAdminLoggedIn(!!session);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const [activeTab, setActiveTab] = useState<'gate' | 'arena' | 'scoreboard' | 'admin' | 'print'>(() => {
     if (typeof window !== 'undefined') {
@@ -822,7 +837,7 @@ export default function App() {
       };
     }
 
-    console.log('[MBB CATEGORY SAVE DIRECT]', {
+    console.log('[MBB][QUESTION SAVE]', {
       id: question.id,
       code: question.code,
       category: question.category,

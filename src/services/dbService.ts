@@ -180,7 +180,7 @@ const unsupportedCompetitionColumns = new Set<string>();
 export const questionToDbRowDirect = (q: Question, competitionId: string, orderIndex: number) => {
   const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
   const codeVal = q.code || q.id || 'Q';
-  const catVal = typeof q.category === 'string' && q.category.trim() ? q.category.trim() : null;
+  const normalizedCategory = typeof q.category === 'string' && q.category.trim() !== '' ? q.category.trim() : null;
 
   // For short_answer, preserve alternativeAnswers in options jsonb as universal fallback
   let optionsPayload: any = q.options || null;
@@ -209,7 +209,7 @@ export const questionToDbRowDirect = (q: Question, competitionId: string, orderI
     unit_hint: q.unitHint || '',
     explanation: q.explanation || '',
     points: typeof q.points === 'number' ? q.points : 10,
-    category: catVal,
+    category: normalizedCategory,
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
     options: optionsPayload,
@@ -223,7 +223,7 @@ export const questionToDbRowDirect = (q: Question, competitionId: string, orderI
 export const questionToDbRowClean = (q: Question, competitionId: string, orderIndex: number) => {
   const alts = Array.isArray(q.alternativeAnswers) ? q.alternativeAnswers.map((s) => String(s).trim()).filter(Boolean) : [];
   const codeVal = q.code || q.id || 'Q';
-  const catVal = typeof q.category === 'string' && q.category.trim() ? q.category.trim() : null;
+  const normalizedCategory = typeof q.category === 'string' && q.category.trim() !== '' ? q.category.trim() : null;
 
   let optionsPayload: any = q.options || null;
   if (!optionsPayload && q.type === 'short_answer' && alts.length > 0) {
@@ -245,7 +245,7 @@ export const questionToDbRowClean = (q: Question, competitionId: string, orderIn
     unit_hint: q.unitHint || '',
     explanation: q.explanation || '',
     points: typeof q.points === 'number' ? q.points : 10,
-    category: catVal,
+    category: normalizedCategory,
     order_index: orderIndex,
     time_limit_seconds: q.timeLimitSeconds || null,
     options: optionsPayload,
@@ -405,7 +405,7 @@ export const dbRowToQuestion = (row: any): Question => {
   // Extract multi part config
   const multiPartConfig = row.multi_part_config || answerData.multiPartConfig || undefined;
 
-  return {
+  const qObj: Question = {
     id: String(row.id),
     code: row.code || row.title || String(row.id),
     type: type,
@@ -414,9 +414,9 @@ export const dbRowToQuestion = (row: any): Question => {
     alternativeAnswers: sanitizedAlts,
     points: Number(row.points) || 10,
     category:
-      typeof row.category === 'string' && row.category.trim()
+      typeof row.category === 'string' && row.category.trim() !== ''
         ? row.category.trim()
-        : typeof row.topic === 'string' && row.topic.trim()
+        : typeof row.topic === 'string' && row.topic.trim() !== ''
         ? row.topic.trim()
         : undefined,
     explanation: row.explanation || row.pembahasan || undefined,
@@ -428,6 +428,14 @@ export const dbRowToQuestion = (row: any): Question => {
     timeLimitSeconds: row.time_limit_seconds ? Number(row.time_limit_seconds) : undefined,
     orderIndex: row.order_index !== undefined && row.order_index !== null ? Number(row.order_index) : undefined,
   };
+
+  console.log('[MBB][QUESTION LOAD]', {
+    id: row.id,
+    category: row.category,
+    topic: row.topic,
+  });
+
+  return qObj;
 };
 
 /**
@@ -476,10 +484,16 @@ export const adaptiveUpsertQuestions = async (
       buildAdaptiveQuestionRow(question, competitionId, orderIndex, unsupportedQuestionColumns)
     );
 
-    console.log('[MBB CATEGORY DB PAYLOAD]', rows.map((r) => ({ id: r.id, code: r.code, category: r.category })));
+    console.log('[MBB][DB QUESTION PAYLOAD]', rows.map((r) => ({ id: r.id, code: r.code, category: r.category })));
 
     const { error } = await supabase.from('questions').upsert(rows);
     if (!error) {
+      rows.forEach((r) => {
+        console.log('[MBB][QUESTION SAVED]', {
+          id: r.id,
+          category: r.category,
+        });
+      });
       return { success: true };
     }
 

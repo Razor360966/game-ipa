@@ -1,97 +1,74 @@
-// Admin / Guru Authentication & Security Utilities for Website MBB
-// Follows strict security rules: No plaintext password storage in localStorage, DB, or code.
+// Supabase Authentication & Security Module for MBB Admin / Guru
+// Single Source of Truth: Supabase Cloud Authentication (GoTrue)
+// NO plaintext or hashed admin passwords are stored in localStorage as source of truth.
 import { getSupabase } from '../services/supabase';
+import type { User, Session, AuthChangeEvent } from '@supabase/supabase-js';
 
-const AUTH_SESSION_KEY = 'mbb_admin_session_v2';
-const PASSWORD_HASH_KEY = 'mbb_admin_password_hash_v2';
-const LEGACY_PIN_KEY = 'mbb_admin_custom_pin_v1';
-const LEGACY_SESSION_KEY = 'mbb_admin_session_v1';
-
-// SHA-256 Hashes of accepted default credentials when no custom password has been set
-// Hashes correspond to: '123456', 'admin', 'guru123', 'mbb2026'
-export const DEFAULT_PASSWORD_HASHES = [
-  '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92', // 123456 (Default resmi)
-  '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', // admin
-  '0b9c262f281e74a8170d7f501711ff63999c71646ff97d1dd5787e28f610499b', // guru123
-  '582e75fbeecf4e41bda5ae9bc3aebaa3690d655f4625b5a2bf2a6f87498c4149', // mbb2026
-];
-
+// Default Admin / Teacher Email
 export const DEFAULT_ADMIN_EMAIL =
   ((import.meta as any).env?.VITE_ADMIN_EMAIL as string) || 'smpalkarimrasyidindonesia@gmail.com';
 
-/**
- * Computes standard SHA-256 hex string from text using Web Crypto API.
- */
-export async function hashPasswordSha256(password: string): Promise<string> {
-  const trimmed = password.trim();
-  if (typeof window === 'undefined' || !window.crypto || !window.crypto.subtle) {
-    let hash = 0;
-    for (let i = 0; i < trimmed.length; i++) {
-      hash = (hash << 5) - hash + trimmed.charCodeAt(i);
-      hash |= 0;
-    }
-    return 'fallback_' + Math.abs(hash).toString(16);
+// Clean up any legacy localStorage password hashes and plaintexts
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('mbb_admin_password_hash_v2');
+    localStorage.removeItem('mbb_admin_custom_pin_v1');
+    localStorage.removeItem('mbb_admin_session_v1');
+    localStorage.removeItem('mbb_admin_session_v2');
+  } catch {
+    // ignore
   }
-  const encoder = new TextEncoder();
-  const data = encoder.encode(trimmed);
-  const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * Retrieves the stored password hash from localStorage (supports raw hash string or JSON versioned object).
+ * Returns the currently authenticated Supabase Auth session if active.
  */
-export function getStoredPasswordHash(): string | null {
-  if (typeof window === 'undefined') return null;
+export async function getAdminSession(): Promise<Session | null> {
+  const supabase = getSupabase();
+  if (!supabase) return null;
   try {
-    const raw = localStorage.getItem(PASSWORD_HASH_KEY);
-    if (!raw) return null;
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    if (trimmed.startsWith('{')) {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed.passwordHash === 'string' && parsed.passwordHash.trim()) {
-        return parsed.passwordHash.trim();
-      }
-    }
-    return trimmed;
-  } catch {
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session) return null;
+    return data.session;
+  } catch (err) {
+    console.error('[getAdminSession Error]', err);
     return null;
   }
 }
 
 /**
- * Stores the newly updated password hash as a versioned JSON structure.
+ * Returns the currently authenticated Supabase user.
  */
-export function saveStoredPasswordHash(hash: string): void {
-  if (typeof window === 'undefined') return;
+export async function getCurrentAdminUser(): Promise<User | null> {
+  const supabase = getSupabase();
+  if (!supabase) return null;
   try {
-    const payload = JSON.stringify({
-      passwordHash: hash.trim(),
-      updatedAt: new Date().toISOString(),
-      version: 2,
-    });
-    localStorage.setItem(PASSWORD_HASH_KEY, payload);
-  } catch {
-    localStorage.setItem(PASSWORD_HASH_KEY, hash.trim());
+    const { data, error } = await supabase.auth.getUser();
+    if (error || !data.user) return null;
+    return data.user;
+  } catch (err) {
+    console.error('[getCurrentAdminUser Error]', err);
+    return null;
   }
 }
 
 /**
- * Checks if current admin session is valid.
+ * Synchronous / initial check for admin session in local Supabase storage cache.
  */
 export function isAdminAuthenticated(): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    const session = localStorage.getItem(AUTH_SESSION_KEY) || localStorage.getItem(LEGACY_SESSION_KEY);
-    if (!session) return false;
-    const parsed = JSON.parse(session);
-    if (parsed && parsed.authenticated && parsed.timestamp) {
-      const now = Date.now();
-      const oneDay = 24 * 60 * 60 * 1000;
-      if (now - parsed.timestamp < oneDay) {
-        return true;
+    // Check if Supabase standard auth token exists in localStorage
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('sb-') || key.includes('auth-token')) && key.endsWith('-auth-token')) {
+        const item = localStorage.getItem(key);
+        if (item) {
+          const parsed = JSON.parse(item);
+          if (parsed && (parsed.access_token || parsed.user)) {
+            return true;
+          }
+        }
       }
     }
   } catch {
@@ -101,105 +78,135 @@ export function isAdminAuthenticated(): boolean {
 }
 
 /**
- * Sets admin authenticated state in session.
+ * Subscribes to Supabase Auth state changes.
  */
-export function setAdminAuthenticated(remember: boolean = true): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const session = {
-      authenticated: true,
-      timestamp: Date.now(),
-      remember,
+export function onAdminAuthStateChange(
+  callback: (event: AuthChangeEvent, session: Session | null) => void
+): { unsubscribe: () => void } {
+  const supabase = getSupabase();
+  if (!supabase) {
+    return { unsubscribe: () => {} };
+  }
+  const { data } = supabase.auth.onAuthStateChange(callback);
+  return {
+    unsubscribe: () => {
+      data.subscription.unsubscribe();
+    },
+  };
+}
+
+/**
+ * Signs in admin/guru using Supabase Authentication.
+ */
+export async function loginAdminWithSupabase(
+  password: string,
+  email?: string
+): Promise<{ success: boolean; error?: string; user?: User }> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    return {
+      success: false,
+      error: 'Supabase client belum terkonfigurasi. Periksa VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY.',
     };
-    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
-    // Clean legacy session if any
-    localStorage.removeItem(LEGACY_SESSION_KEY);
-  } catch {
-    // ignore
   }
-}
 
-/**
- * Logs out admin.
- */
-export function logoutAdmin(): void {
-  if (typeof window === 'undefined') return;
+  const targetEmail = (email && email.trim()) || DEFAULT_ADMIN_EMAIL;
+  const targetPassword = password.trim();
+
+  if (!targetPassword) {
+    return { success: false, error: 'Password admin tidak boleh kosong.' };
+  }
+
   try {
-    localStorage.removeItem(AUTH_SESSION_KEY);
-    localStorage.removeItem(LEGACY_SESSION_KEY);
-  } catch {
-    // ignore
+    // 1. Attempt Sign In with Supabase Auth
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: targetEmail,
+      password: targetPassword,
+    });
+
+    if (!error && data.user) {
+      console.log('[MBB][AUTH] Admin login successful via Supabase Auth:', data.user.email);
+      return { success: true, user: data.user };
+    }
+
+    // 2. If user doesn't exist yet on fresh Supabase project, try auto sign-up
+    if (error && (error.message.includes('Invalid login credentials') || error.message.includes('User not found'))) {
+      // If default credentials or first setup, attempt initial sign-up
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: targetEmail,
+        password: targetPassword,
+      });
+
+      if (!signUpError && signUpData.user) {
+        console.log('[MBB][AUTH] Admin account initialized via Supabase Auth:', signUpData.user.email);
+        return { success: true, user: signUpData.user };
+      }
+    }
+
+    return {
+      success: false,
+      error: error?.message || 'Login gagal. Periksa kembali email dan password admin.',
+    };
+  } catch (err: any) {
+    console.error('[MBB][AUTH Login Error]', err);
+    return {
+      success: false,
+      error: err?.message || 'Terjadi kesalahan saat memverifikasi ke Supabase Cloud.',
+    };
   }
 }
 
 /**
- * Gets currently logged in admin user email or fallback email.
+ * Legacy compatibility alias for verifyAdminPassword
  */
-export async function getAdminUserEmail(): Promise<string> {
+export async function verifyAdminPassword(password: string, email?: string): Promise<boolean> {
+  const res = await loginAdminWithSupabase(password, email);
+  return res.success;
+}
+
+/**
+ * Marks admin authenticated (kept for interface compatibility).
+ */
+export function setAdminAuthenticated(_remember: boolean = true): void {
+  // Session is now handled directly by Supabase Auth persistSession
+}
+
+/**
+ * Logs out admin from Supabase Cloud session.
+ */
+export async function logoutAdmin(): Promise<void> {
   const supabase = getSupabase();
   if (supabase) {
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (user && user.email) {
-        return user.email;
-      }
-    } catch {
-      // ignore
+      await supabase.auth.signOut();
+      console.log('[MBB][AUTH] Admin logged out from Supabase Auth.');
+    } catch (err) {
+      console.warn('[MBB][AUTH SignOut Warning]', err);
     }
+  }
+  // Clear any residual keys
+  try {
+    localStorage.removeItem('mbb_admin_session_v2');
+    localStorage.removeItem('mbb_admin_password_hash_v2');
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Gets currently logged in admin user email or fallback.
+ */
+export async function getAdminUserEmail(): Promise<string> {
+  const user = await getCurrentAdminUser();
+  if (user && user.email) {
+    return user.email;
   }
   return DEFAULT_ADMIN_EMAIL;
 }
 
 /**
- * Migrates any legacy plaintext PIN to SHA-256 hash immediately.
- */
-async function autoMigrateLegacyPin(): Promise<void> {
-  if (typeof window === 'undefined') return;
-  try {
-    const legacyPin = localStorage.getItem(LEGACY_PIN_KEY);
-    if (legacyPin && legacyPin.trim()) {
-      const hash = await hashPasswordSha256(legacyPin.trim());
-      saveStoredPasswordHash(hash);
-      localStorage.removeItem(LEGACY_PIN_KEY); // STRICT: delete plaintext immediately
-    }
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * Verifies admin password by hashing input and comparing SHA-256 hashes.
- * - If a custom password has been saved, ONLY that custom password hash is valid.
- * - If no custom password has been saved, accepts default hashes ('123456', etc.).
- */
-export async function verifyAdminPassword(input: string): Promise<boolean> {
-  const trimmed = input.trim();
-  if (!trimmed) return false;
-
-  await autoMigrateLegacyPin();
-
-  const inputHash = await hashPasswordSha256(trimmed);
-  const storedHash = getStoredPasswordHash();
-
-  if (storedHash) {
-    // Custom password is set: ONLY verify against stored custom hash
-    return storedHash === inputHash;
-  }
-
-  // No custom password has ever been set: check default accepted hashes (e.g. '123456')
-  return DEFAULT_PASSWORD_HASHES.includes(inputHash);
-}
-
-/**
- * Changes admin password securely.
- * - Validates old password against currently active password.
- * - Minimum 8 characters for new password.
- * - Validates that new password != old password.
- * - Validates confirmation match.
- * - Stores ONLY cryptographic SHA-256 hash in versioned structure.
- * - Maintains active authenticated session.
+ * Changes admin password in Supabase Cloud Authentication.
+ * Updates password directly on Supabase GoTrue server so it propagates to all devices instantly!
  */
 export async function changeAdminPassword(
   oldPassword: string,
@@ -209,87 +216,73 @@ export async function changeAdminPassword(
   const trimmedOld = oldPassword.trim();
   const trimmedNew = newPassword.trim();
 
-  // 1. Validasi Password Lama
+  // 1. Validation
   if (!trimmedOld) {
-    return {
-      success: false,
-      error: 'Password lama / PIN saat ini wajib diisi.',
-    };
+    return { success: false, error: 'Password lama saat ini wajib diisi.' };
   }
 
-  const isOldValid = await verifyAdminPassword(trimmedOld);
-  if (!isOldValid) {
-    return {
-      success: false,
-      error: 'Password lama tidak benar.',
-    };
-  }
-
-  // 2. Validasi Password Baru
   if (!trimmedNew) {
-    return {
-      success: false,
-      error: 'Password baru tidak boleh kosong.',
-    };
+    return { success: false, error: 'Password baru tidak boleh kosong.' };
   }
 
   if (trimmedNew.length < 8) {
-    return {
-      success: false,
-      error: 'Password baru minimal 8 karakter.',
-    };
+    return { success: false, error: 'Password baru minimal 8 karakter.' };
   }
 
   if (trimmedNew === trimmedOld) {
-    return {
-      success: false,
-      error: 'Password baru tidak boleh sama dengan password lama.',
-    };
+    return { success: false, error: 'Password baru tidak boleh sama dengan password lama.' };
   }
 
-  // 3. Validasi Konfirmasi Password
   if (confirmPassword !== undefined && trimmedNew !== confirmPassword.trim()) {
+    return { success: false, error: 'Konfirmasi password tidak sama dengan password baru.' };
+  }
+
+  const supabase = getSupabase();
+  if (!supabase) {
     return {
       success: false,
-      error: 'Konfirmasi password tidak sama dengan password baru.',
+      error: 'Supabase client tidak tersedia. Tidak dapat mengubah password cloud.',
     };
   }
 
   try {
-    // 4. Update Supabase Auth user if available
-    const supabase = getSupabase();
-    if (supabase) {
-      try {
-        const { data: userData } = await supabase.auth.getUser();
-        if (userData?.user) {
-          const { error: authError } = await supabase.auth.updateUser({
-            password: trimmedNew,
-          });
-          if (authError) {
-            console.warn('[Supabase Auth Update Warning]', authError.message);
-          }
-        }
-      } catch (sbErr) {
-        console.warn('[Supabase Auth Error ignored in local fallback]', sbErr);
-      }
+    // 2. Verify current credentials against Supabase Auth
+    const email = await getAdminUserEmail();
+    const verifyRes = await supabase.auth.signInWithPassword({
+      email,
+      password: trimmedOld,
+    });
+
+    if (verifyRes.error) {
+      return {
+        success: false,
+        error: 'Password lama tidak benar sesuai data Supabase Cloud.',
+      };
     }
 
-    // 5. Hash new password with SHA-256 and store versioned hash
-    const newHash = await hashPasswordSha256(trimmedNew);
-    saveStoredPasswordHash(newHash);
-    localStorage.removeItem(LEGACY_PIN_KEY); // Purge any legacy plaintext
+    // 3. Update password on Supabase Auth Cloud
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: trimmedNew,
+    });
 
-    // 6. Maintain valid authenticated session
-    setAdminAuthenticated(true);
+    if (updateError) {
+      return {
+        success: false,
+        error: `Gagal memperbarui password di Supabase: ${updateError.message}`,
+      };
+    }
+
+    console.log('[MBB][AUTH] Password successfully updated in Supabase Cloud for:', email);
 
     return {
       success: true,
-      message: 'Password berhasil diubah.',
+      message: 'Password berhasil diubah di Supabase Cloud dan berlaku untuk semua perangkat!',
     };
   } catch (err: any) {
+    console.error('[MBB][AUTH Change Password Error]', err);
     return {
       success: false,
-      error: err?.message || 'Gagal mengubah password. Silakan coba lagi.',
+      error: err?.message || 'Terjadi kesalahan sistem saat mengubah password.',
     };
   }
 }

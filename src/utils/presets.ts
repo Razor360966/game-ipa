@@ -435,12 +435,12 @@ export function filterQuestionsByCategory(questions: Question[], category?: stri
   
   const sorted = [...questions].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
   
-  if (!category || !category.trim()) {
+  if (!category || !category.trim() || category === '__ALL__') {
     return sorted;
   }
 
   const normalized = normalizeCategoryKey(category);
-  if (normalized === 'all' || normalized === 'semua' || normalized === 'semua topik') {
+  if (normalized === 'all' || normalized === 'semua' || normalized === 'semua topik' || normalized === '__all__') {
     return sorted;
   }
 

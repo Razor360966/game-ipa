@@ -655,8 +655,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setIsSavingQuestion(true);
     try {
       const isEdit = Boolean(editingQuestionId);
-      const finalCategory = questionForm.category?.trim() || undefined;
+      const rawCategory = questionForm.category;
+      const finalCategory = typeof rawCategory === 'string' && rawCategory.trim() !== '' ? rawCategory.trim() : undefined;
       let questionObj: Question;
+
+      console.log('[MBB][FORM CATEGORY INPUT]', {
+        rawCategory,
+        finalCategory,
+        editingQuestionId,
+        isEdit,
+      });
 
       if (editingQuestionId) {
         const existing = questions.find((q) => q.id === editingQuestionId);
@@ -686,10 +694,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         };
       }
 
-      console.log('[MBB CATEGORY DEBUG] Form category:', questionForm.category);
-      console.log('[MBB CATEGORY DEBUG] Question category:', questionObj.category);
+      console.log('[MBB][QUESTION SAVE OBJECT]', {
+        id: questionObj.id,
+        code: questionObj.code,
+        category: questionObj.category,
+        points: questionObj.points,
+        type: questionObj.type,
+      });
 
       if (onSaveQuestionDirect) {
+        console.log('[MBB][DISPATCH ON_SAVE_QUESTION_DIRECT]', {
+          id: questionObj.id,
+          code: questionObj.code,
+          category: questionObj.category,
+        });
         const res = await onSaveQuestionDirect(questionObj, isEdit);
         if (!res.success) {
           setQuestionError(res.error || 'Gagal menyimpan soal ke Supabase.');

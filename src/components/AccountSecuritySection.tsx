@@ -147,7 +147,7 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
 
         <span className="text-[11px] px-3 py-1 rounded-full bg-purple-500/10 text-purple-300 border border-purple-400/30 flex items-center gap-1.5 font-semibold">
           <Lock className="w-3.5 h-3.5" />
-          Enkripsi SHA-256 Aktif
+          Supabase Cloud Auth Aktif
         </span>
       </div>
 
@@ -155,10 +155,9 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
       <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-start gap-3">
         <KeyRound className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
         <div className="text-xs text-slate-300 space-y-1">
-          <p className="font-bold text-white">Panduan Penggantian Password:</p>
+          <p className="font-bold text-white">Panduan Penggantian Password Guru / Admin:</p>
           <p className="text-slate-400">
-            Masukkan password lama (default awal: <code className="text-cyan-300 bg-white/10 px-1.5 py-0.5 rounded font-mono">123456</code>). 
-            Password baru harus minimal <strong>8 karakter</strong> dan tidak pernah disimpan dalam bentuk plaintext.
+            Perubahan password langsung disimpan ke <strong>Supabase Cloud Auth</strong>. Saat diganti di Perangkat A (misal Laptop Guru), password baru langsung berlaku untuk login di Perangkat B (misal HP/Tablet) tanpa perlu konfigurasi ulang.
           </p>
         </div>
       </div>
