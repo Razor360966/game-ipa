@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS public.competitions (
 -- Migration safety for existing competitions table
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS order_locked BOOLEAN DEFAULT FALSE;
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS selected_topic VARCHAR(150);
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS playlist_mode VARCHAR(50) DEFAULT 'all';
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS playlist_name VARCHAR(255);
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS selected_topics TEXT[];
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS custom_question_ids TEXT[];
 
 -- 2. Tabel teams
 CREATE TABLE IF NOT EXISTS public.teams (
@@ -774,7 +778,11 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
     const settings: GameSettings = {
       matchTitle: compData.title || 'MEASUREMENT BLOCK BLAST',
       roundName: compData.round_name || 'BABAK PENYISIHAN UTAMA',
+      playlistMode: (compData.playlist_mode as any) || (compData.selected_topic ? 'topic' : 'all'),
+      playlistName: compData.playlist_name || undefined,
       selectedTopic: compData.selected_topic || '',
+      selectedTopics: Array.isArray(compData.selected_topics) ? compData.selected_topics : undefined,
+      customQuestionIds: Array.isArray(compData.custom_question_ids) ? compData.custom_question_ids : undefined,
       durationMinutes: Number(compData.duration_minutes) || 10,
       questionTimeLimitSeconds: Number(compData.question_time_limit_seconds) || 30,
       enableQuestionTimer: compData.enable_question_timer ?? true,
@@ -824,7 +832,11 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
       id: roomId,
       title: state.settings.matchTitle,
       round_name: state.settings.roundName,
+      playlist_mode: state.settings.playlistMode || 'all',
+      playlist_name: state.settings.playlistName || null,
       selected_topic: state.settings.selectedTopic || null,
+      selected_topics: state.settings.selectedTopics || null,
+      custom_question_ids: state.settings.customQuestionIds || null,
       duration_minutes: state.settings.durationMinutes,
       question_time_limit_seconds: state.settings.questionTimeLimitSeconds ?? 30,
       enable_question_timer: state.settings.enableQuestionTimer ?? true,
@@ -845,11 +857,23 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
     };
 
     let { error: compErr } = await supabase.from('competitions').upsert(compRow);
-    if (compErr && (compErr.message?.includes('order_locked') || compErr.message?.includes('selected_topic'))) {
-      // Fallback if order_locked or selected_topic column not yet migrated in old remote DB
+    if (
+      compErr &&
+      (compErr.message?.includes('order_locked') ||
+        compErr.message?.includes('selected_topic') ||
+        compErr.message?.includes('playlist_mode') ||
+        compErr.message?.includes('playlist_name') ||
+        compErr.message?.includes('selected_topics') ||
+        compErr.message?.includes('custom_question_ids'))
+    ) {
+      // Fallback if playlist or order_locked columns not yet migrated in old remote DB
       const fallbackRow = { ...compRow };
       if (compErr.message?.includes('order_locked')) delete fallbackRow.order_locked;
       if (compErr.message?.includes('selected_topic')) delete fallbackRow.selected_topic;
+      if (compErr.message?.includes('playlist_mode')) delete fallbackRow.playlist_mode;
+      if (compErr.message?.includes('playlist_name')) delete fallbackRow.playlist_name;
+      if (compErr.message?.includes('selected_topics')) delete fallbackRow.selected_topics;
+      if (compErr.message?.includes('custom_question_ids')) delete fallbackRow.custom_question_ids;
       const res = await supabase.from('competitions').upsert(fallbackRow);
       compErr = res.error;
     }

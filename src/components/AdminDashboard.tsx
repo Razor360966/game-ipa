@@ -58,6 +58,7 @@ import {
   StatementCorrectionConfig,
   MultiPartConfig,
   MultiPartItem,
+  PlaylistMode,
 } from '../types';
 import {
   COLOR_MAP,
@@ -68,11 +69,22 @@ import {
   filterQuestionsByCategory,
 } from '../utils/presets';
 import { sound } from '../utils/sound';
+import { AccountSecuritySection } from './AccountSecuritySection';
+import { PlaylistManager } from './PlaylistManager';
 
 interface AdminDashboardProps {
   gameState: GameState;
   masterQuestions?: Question[];
   onSelectTopic?: (topic: string) => void;
+  onApplyPlaylist?: (
+    mode: PlaylistMode,
+    options: {
+      selectedTopic?: string;
+      selectedTopics?: string[];
+      customQuestionIds?: string[];
+      playlistName?: string;
+    }
+  ) => void;
   onUpdateSettings: (newSettings: GameSettings) => void;
   onUpdateTeams: (newTeams: Team[]) => void;
   onUpdateQuestions: (newQuestions: Question[]) => void;
@@ -99,6 +111,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   gameState,
   masterQuestions,
   onSelectTopic,
+  onApplyPlaylist,
   onUpdateSettings,
   onUpdateTeams,
   onUpdateQuestions,
@@ -1617,6 +1630,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
 
+              {/* CARD: CUSTOM PLAYLIST & SNAPSHOT IN DASHBOARD */}
+              <PlaylistManager
+                masterQuestions={masterPool}
+                currentSettings={matchForm}
+                isOrderLocked={isOrderLocked}
+                onApplyPlaylist={(mode, opts) => {
+                  if (onApplyPlaylist) {
+                    onApplyPlaylist(mode, opts);
+                  } else {
+                    handleTopicChange(opts.selectedTopic || '');
+                  }
+                }}
+                onShowToast={showToast}
+              />
+
               {/* CARD: KELOMPOK PESERTA (Overview Grid) */}
               <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-3xl p-6 shadow-xl space-y-6">
                 <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
@@ -2125,15 +2153,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* TAB: SETTINGS (Pengaturan Pertandingan Lengkap) */}
           {/* ------------------------------------------------------------- */}
           {activeTab === 'settings' && (
-            <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-3xl p-6 shadow-xl space-y-6 animate-in fade-in duration-200">
-              <div className="border-b border-white/10 pb-4">
-                <h2 className="text-xl font-bold text-white uppercase tracking-wider">
-                  PENGATURAN LENGKAP PERTANDINGAN
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Konfigurasi waktu, bobot poin, toleransi huruf besar/kecil, dan efek suara
-                </p>
-              </div>
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-3xl p-6 shadow-xl space-y-6">
+                <div className="border-b border-white/10 pb-4">
+                  <h2 className="text-xl font-bold text-white uppercase tracking-wider">
+                    PENGATURAN LENGKAP PERTANDINGAN
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Konfigurasi waktu, bobot poin, toleransi huruf besar/kecil, dan efek suara
+                  </p>
+                </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div className="space-y-2">
@@ -2306,6 +2335,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   SIMPAN PENGATURAN
                 </button>
               </div>
+            </div>
+
+            {/* CUSTOM PLAYLIST MANAGEMENT CARD IN SETTINGS */}
+            <PlaylistManager
+              masterQuestions={masterPool}
+              currentSettings={matchForm}
+              isOrderLocked={isOrderLocked}
+              onApplyPlaylist={(mode, opts) => {
+                if (onApplyPlaylist) {
+                  onApplyPlaylist(mode, opts);
+                } else {
+                  handleTopicChange(opts.selectedTopic || '');
+                }
+              }}
+              onShowToast={showToast}
+            />
+
+            {/* ACCOUNT & SECURITY (GANTI PASSWORD ADMIN) */}
+            <AccountSecuritySection
+              onSuccessToast={(msg) => showToast(msg, 'success')}
+              onErrorToast={(msg) => showToast(msg, 'error')}
+            />
             </div>
           )}
 

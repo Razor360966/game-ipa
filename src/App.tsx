@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GameState, Team, Question, GameSettings } from './types';
+import { GameState, Team, Question, GameSettings, PlaylistMode } from './types';
 import { getInitialGameState, saveGameState, DEFAULT_SETTINGS, getStoredRoomId, setStoredRoomId } from './utils/storage';
 import {
   generateTeamCardDecks,
@@ -7,6 +7,7 @@ import {
   DEMO_QUESTIONS,
   INITIAL_TEAMS,
   filterQuestionsByCategory,
+  filterQuestionsByPlaylist,
   getUniqueQuestionCategories,
 } from './utils/presets';
 import { sound } from './utils/sound';
@@ -114,6 +115,16 @@ export default function App() {
           if (cloudState.status === 'running' && cloudState.startedAt) {
             const elapsed = Math.floor((Date.now() - cloudState.startedAt) / 1000);
             calculatedRemaining = Math.max(0, cloudState.timeRemainingSeconds - elapsed);
+          }
+
+          if (cloudState.questions && cloudState.questions.length > 0) {
+            setMasterQuestions((prevMaster) => {
+              const masterMap = new Map<string, Question>();
+              DEMO_QUESTIONS.forEach((q) => masterMap.set(q.id, q));
+              prevMaster.forEach((q) => masterMap.set(q.id, q));
+              cloudState.questions.forEach((q) => masterMap.set(q.id, q));
+              return Array.from(masterMap.values());
+            });
           }
 
           // Protect questions: if cloud has questions, use them
@@ -643,25 +654,51 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // ADMIN UPDATE HANDLERS (With Supabase Sync & Topic Selection)
+  // ADMIN UPDATE HANDLERS (With Supabase Sync, Custom Playlist & Snapshot)
   // -------------------------------------------------------------
-  const handleSelectTopic = (newTopic: string) => {
+  const handleApplyPlaylist = (
+    playlistMode: PlaylistMode,
+    options: {
+      selectedTopic?: string;
+      selectedTopics?: string[];
+      customQuestionIds?: string[];
+      playlistName?: string;
+    }
+  ) => {
     if (gameState.orderLocked) {
-      console.warn('[handleSelectTopic blocked because order is locked]');
+      console.warn('[handleApplyPlaylist blocked: order is locked]');
       return;
     }
 
-    const filteredQuestions = filterQuestionsByCategory(masterQuestions, newTopic);
-    const newDecks = generateTeamCardDecks(gameState.teams, filteredQuestions);
+    const snapshotQuestions = filterQuestionsByPlaylist(masterQuestions, {
+      playlistMode,
+      selectedTopic: options.selectedTopic,
+      selectedTopics: options.selectedTopics,
+      customQuestionIds: options.customQuestionIds,
+    });
+
+    const newDecks = generateTeamCardDecks(gameState.teams, snapshotQuestions);
 
     setGameState((prev) => {
+      const nextSettings: GameSettings = {
+        ...prev.settings,
+        playlistMode,
+        playlistName:
+          options.playlistName ||
+          (playlistMode === 'topic'
+            ? `Topik: ${options.selectedTopic || 'Semua Topik'}`
+            : playlistMode === 'custom'
+            ? 'Custom Playlist'
+            : 'Semua Soal Master'),
+        selectedTopic: options.selectedTopic || '',
+        selectedTopics: options.selectedTopics || [],
+        customQuestionIds: options.customQuestionIds || [],
+      };
+
       const nextState: GameState = {
         ...prev,
-        settings: {
-          ...prev.settings,
-          selectedTopic: newTopic,
-        },
-        questions: filteredQuestions,
+        settings: nextSettings,
+        questions: snapshotQuestions, // MATCH QUESTION SNAPSHOT
         teamCardDecks: newDecks,
       };
       saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
@@ -669,18 +706,36 @@ export default function App() {
     });
   };
 
+  const handleSelectTopic = (newTopic: string) => {
+    if (gameState.orderLocked) {
+      console.warn('[handleSelectTopic blocked because order is locked]');
+      return;
+    }
+
+    handleApplyPlaylist(newTopic ? 'topic' : 'all', {
+      selectedTopic: newTopic,
+    });
+  };
+
   const handleUpdateSettings = (newSettings: GameSettings) => {
     const topicChanged = (newSettings.selectedTopic || '') !== (gameState.settings.selectedTopic || '');
-    if (topicChanged && gameState.orderLocked) {
-      console.warn('[Changing topic blocked because order is locked]');
+    const modeChanged = (newSettings.playlistMode || 'all') !== (gameState.settings.playlistMode || 'all');
+    
+    if ((topicChanged || modeChanged) && gameState.orderLocked) {
+      console.warn('[Changing playlist or topic blocked because order is locked]');
       return;
     }
 
     let nextQuestions = gameState.questions;
     let nextDecks = gameState.teamCardDecks;
 
-    if (topicChanged && !gameState.orderLocked) {
-      nextQuestions = filterQuestionsByCategory(masterQuestions, newSettings.selectedTopic);
+    if ((topicChanged || modeChanged) && !gameState.orderLocked) {
+      nextQuestions = filterQuestionsByPlaylist(masterQuestions, {
+        playlistMode: newSettings.playlistMode,
+        selectedTopic: newSettings.selectedTopic,
+        selectedTopics: newSettings.selectedTopics,
+        customQuestionIds: newSettings.customQuestionIds,
+      });
       nextDecks = generateTeamCardDecks(gameState.teams, nextQuestions);
     }
 
@@ -791,12 +846,17 @@ export default function App() {
           prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
 
         let nextQuestions: Question[];
-        if (prev.orderLocked) {
-          nextQuestions = isEdit
-            ? prev.questions.map((q) => (q.id === question.id ? question : q))
-            : prev.questions;
+        if (isEdit) {
+          // Update the question inside match snapshot if present
+          nextQuestions = prev.questions.map((q) => (q.id === question.id ? question : q));
         } else {
-          nextQuestions = filterQuestionsByCategory(nextMaster, prev.settings.selectedTopic);
+          // If match order is locked or snapshot is active, adding to master doesn't alter snapshot
+          if (prev.orderLocked) {
+            nextQuestions = prev.questions;
+          } else {
+            // Keep current match questions snapshot stable unless playlist is re-applied
+            nextQuestions = prev.questions;
+          }
         }
 
         const newDecks = !isMatchStarted
@@ -838,7 +898,8 @@ export default function App() {
           prev.status === 'paused' ||
           prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
 
-        const nextQuestions = filterQuestionsByCategory(nextMaster, prev.settings.selectedTopic);
+        // If the deleted question was in the active snapshot, remove it from active snapshot
+        const nextQuestions = prev.questions.filter((q) => q.id !== questionId);
         const newDecks = !isMatchStarted
           ? generateTeamCardDecks(prev.teams, nextQuestions)
           : prev.teamCardDecks;
@@ -1227,6 +1288,7 @@ export default function App() {
             gameState={gameState}
             masterQuestions={masterQuestions}
             onSelectTopic={handleSelectTopic}
+            onApplyPlaylist={handleApplyPlaylist}
             onUpdateSettings={handleUpdateSettings}
             onUpdateTeams={handleUpdateTeams}
             onUpdateQuestions={handleUpdateQuestions}

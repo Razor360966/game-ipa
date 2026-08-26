@@ -18,25 +18,34 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   const [showPin, setShowPin] = useState(false);
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pin.trim()) {
       setError('Silakan masukkan PIN / Password Admin');
       return;
     }
 
-    if (verifyAdminPassword(pin)) {
-      setAdminAuthenticated(remember);
-      sound.playCorrect();
-      setError(null);
-      setPin('');
-      onSuccess();
-    } else {
-      sound.playWrong();
-      setError('PIN / Password salah! (Default: 123456 atau admin)');
+    setLoading(true);
+    try {
+      const isValid = await verifyAdminPassword(pin);
+      if (isValid) {
+        setAdminAuthenticated(remember);
+        sound.playCorrect();
+        setError(null);
+        setPin('');
+        onSuccess();
+      } else {
+        sound.playWrong();
+        setError('PIN / Password salah! Periksa kembali password Anda.');
+      }
+    } catch {
+      setError('Terjadi kesalahan validasi.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -163,10 +172,11 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
             <button
               id="btn-submit-admin-login"
               type="submit"
-              className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(79,70,229,0.4)] transition-all cursor-pointer"
+              disabled={loading}
+              className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(79,70,229,0.4)] transition-all cursor-pointer"
             >
               <KeyRound className="w-4 h-4" />
-              <span>Masuk Dashboard Admin</span>
+              <span>{loading ? 'Memverifikasi...' : 'Masuk Dashboard Admin'}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
 

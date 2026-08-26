@@ -1,4 +1,4 @@
-import { Question, Team, TeamCardAssignment, TeamColor } from '../types';
+import { Question, Team, TeamCardAssignment, TeamColor, PlaylistMode } from '../types';
 
 export const INITIAL_TEAMS: Team[] = [
   { id: 'team-alpha', name: 'ALPHA', color: 'cyan', score: 0, correctCount: 0, wrongCount: 0 },
@@ -300,6 +300,56 @@ export function filterQuestionsByCategory(questions: Question[], category?: stri
   }
   const normalized = category.trim().toLowerCase();
   return questions.filter((q) => (q.category || '').trim().toLowerCase() === normalized);
+}
+
+export interface PlaylistFilterOptions {
+  playlistMode?: PlaylistMode;
+  selectedTopic?: string;
+  selectedTopics?: string[];
+  customQuestionIds?: string[];
+}
+
+/**
+ * Filters Master Question Bank into match questions snapshot based on Playlist settings:
+ * 1. 'all': All questions from master pool in their defined sequence.
+ * 2. 'topic': Questions filtered by single selectedTopic.
+ * 3. 'custom': Questions filtered by custom selection (customQuestionIds, or fallback selectedTopics).
+ * Strictly preserves master question order / sequence!
+ */
+export function filterQuestionsByPlaylist(
+  questions: Question[],
+  options: PlaylistFilterOptions
+): Question[] {
+  if (!questions || questions.length === 0) return [];
+  const mode = options.playlistMode || 'all';
+
+  if (mode === 'all') {
+    return [...questions];
+  }
+
+  if (mode === 'topic') {
+    return filterQuestionsByCategory(questions, options.selectedTopic);
+  }
+
+  if (mode === 'custom') {
+    const customIds = options.customQuestionIds;
+    if (customIds && customIds.length > 0) {
+      const idSet = new Set(customIds);
+      // Filter from master pool preserving order_index / sequence
+      return questions.filter((q) => idSet.has(q.id));
+    }
+
+    // Fallback if multiple topics selected but no individual IDs
+    const topics = options.selectedTopics;
+    if (topics && topics.length > 0) {
+      const normalizedTopics = new Set(topics.map((t) => t.trim().toLowerCase()));
+      return questions.filter((q) => normalizedTopics.has((q.category || '').trim().toLowerCase()));
+    }
+
+    return [...questions];
+  }
+
+  return [...questions];
 }
 
 /**

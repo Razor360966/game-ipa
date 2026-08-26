@@ -74,6 +74,8 @@ export interface Question {
 
 export type QuestionCardStatus = 'unanswered' | 'correct' | 'wrong' | 'locked';
 
+export type PlaylistMode = 'all' | 'topic' | 'custom';
+
 export interface TeamCardAssignment {
   cardNumber: number; // 1, 2, 3... (Physical card number given to student)
   cardCode: string; // e.g. "ALP-01"
@@ -92,7 +94,11 @@ export interface TeamCardDeck {
 export interface GameSettings {
   matchTitle: string;
   roundName: string;
-  selectedTopic?: string; // Phase 3: Topik/Kategori Soal yang dipilih untuk pertandingan (e.g. "Alat Ukur" or "" for All)
+  playlistMode?: PlaylistMode; // 'all' | 'topic' | 'custom' (defaults to 'all')
+  playlistName?: string; // e.g. "Pengukuran Dasar IPA Kelas 7"
+  selectedTopic?: string; // Single topic mode (e.g. "Alat Ukur")
+  selectedTopics?: string[]; // Multi-topic list for custom playlist mode
+  customQuestionIds?: string[]; // Explicit list of question IDs included in custom playlist
   durationMinutes: number; // Durasi keseluruhan game dalam menit
   questionTimeLimitSeconds: number; // Batas waktu menjawab khusus per soal (detik), misal 30 detik
   enableQuestionTimer: boolean; // Aktifkan/nonaktifkan batas waktu khusus per soal
