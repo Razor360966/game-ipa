@@ -7,10 +7,10 @@ const PASSWORD_HASH_KEY = 'mbb_admin_password_hash_v2';
 const LEGACY_PIN_KEY = 'mbb_admin_custom_pin_v1';
 const LEGACY_SESSION_KEY = 'mbb_admin_session_v1';
 
-// SHA-256 Hashes of accepted default credentials (NEVER plaintext)
+// SHA-256 Hashes of accepted default credentials when no custom password has been set
 // Hashes correspond to: '123456', 'admin', 'guru123', 'mbb2026'
-const DEFAULT_PASSWORD_HASHES = [
-  '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92', // 123456
+export const DEFAULT_PASSWORD_HASHES = [
+  '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92', // 123456 (Default resmi)
   '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', // admin
   '0b9c262f281e74a8170d7f501711ff63999c71646ff97d1dd5787e28f610499b', // guru123
   '582e75fbeecf4e41bda5ae9bc3aebaa3690d655f4625b5a2bf2a6f87498c4149', // mbb2026
@@ -37,6 +37,45 @@ export async function hashPasswordSha256(password: string): Promise<string> {
   const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Retrieves the stored password hash from localStorage (supports raw hash string or JSON versioned object).
+ */
+export function getStoredPasswordHash(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(PASSWORD_HASH_KEY);
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('{')) {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed.passwordHash === 'string' && parsed.passwordHash.trim()) {
+        return parsed.passwordHash.trim();
+      }
+    }
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stores the newly updated password hash as a versioned JSON structure.
+ */
+export function saveStoredPasswordHash(hash: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const payload = JSON.stringify({
+      passwordHash: hash.trim(),
+      updatedAt: new Date().toISOString(),
+      version: 2,
+    });
+    localStorage.setItem(PASSWORD_HASH_KEY, payload);
+  } catch {
+    localStorage.setItem(PASSWORD_HASH_KEY, hash.trim());
+  }
 }
 
 /**
@@ -120,9 +159,9 @@ async function autoMigrateLegacyPin(): Promise<void> {
   if (typeof window === 'undefined') return;
   try {
     const legacyPin = localStorage.getItem(LEGACY_PIN_KEY);
-    if (legacyPin) {
-      const hash = await hashPasswordSha256(legacyPin);
-      localStorage.setItem(PASSWORD_HASH_KEY, hash);
+    if (legacyPin && legacyPin.trim()) {
+      const hash = await hashPasswordSha256(legacyPin.trim());
+      saveStoredPasswordHash(hash);
       localStorage.removeItem(LEGACY_PIN_KEY); // STRICT: delete plaintext immediately
     }
   } catch {
@@ -132,6 +171,8 @@ async function autoMigrateLegacyPin(): Promise<void> {
 
 /**
  * Verifies admin password by hashing input and comparing SHA-256 hashes.
+ * - If a custom password has been saved, ONLY that custom password hash is valid.
+ * - If no custom password has been saved, accepts default hashes ('123456', etc.).
  */
 export async function verifyAdminPassword(input: string): Promise<boolean> {
   const trimmed = input.trim();
@@ -140,56 +181,89 @@ export async function verifyAdminPassword(input: string): Promise<boolean> {
   await autoMigrateLegacyPin();
 
   const inputHash = await hashPasswordSha256(trimmed);
+  const storedHash = getStoredPasswordHash();
 
-  try {
-    const customHash = localStorage.getItem(PASSWORD_HASH_KEY);
-    if (customHash && customHash.trim()) {
-      if (customHash.trim() === inputHash) return true;
-    }
-  } catch {
-    // ignore
+  if (storedHash) {
+    // Custom password is set: ONLY verify against stored custom hash
+    return storedHash === inputHash;
   }
 
-  // Check default accepted hashes
+  // No custom password has ever been set: check default accepted hashes (e.g. '123456')
   return DEFAULT_PASSWORD_HASHES.includes(inputHash);
 }
 
 /**
  * Changes admin password securely.
- * - Minimum 8 characters.
- * - If Supabase Auth session exists, executes official supabase.auth.updateUser({ password }).
- * - Stores ONLY cryptographic SHA-256 hash locally.
- * - Retains active authenticated session.
+ * - Validates old password against currently active password.
+ * - Minimum 8 characters for new password.
+ * - Validates that new password != old password.
+ * - Validates confirmation match.
+ * - Stores ONLY cryptographic SHA-256 hash in versioned structure.
+ * - Maintains active authenticated session.
  */
 export async function changeAdminPassword(
+  oldPassword: string,
   newPassword: string,
   confirmPassword?: string
 ): Promise<{ success: boolean; message?: string; error?: string }> {
-  const trimmed = newPassword.trim();
+  const trimmedOld = oldPassword.trim();
+  const trimmedNew = newPassword.trim();
 
-  if (trimmed.length < 8) {
+  // 1. Validasi Password Lama
+  if (!trimmedOld) {
     return {
       success: false,
-      error: 'Password baru minimal harus 8 karakter.',
+      error: 'Password lama / PIN saat ini wajib diisi.',
     };
   }
 
-  if (confirmPassword !== undefined && trimmed !== confirmPassword.trim()) {
+  const isOldValid = await verifyAdminPassword(trimmedOld);
+  if (!isOldValid) {
     return {
       success: false,
-      error: 'Konfirmasi password tidak cocok dengan password baru.',
+      error: 'Password lama tidak benar.',
+    };
+  }
+
+  // 2. Validasi Password Baru
+  if (!trimmedNew) {
+    return {
+      success: false,
+      error: 'Password baru tidak boleh kosong.',
+    };
+  }
+
+  if (trimmedNew.length < 8) {
+    return {
+      success: false,
+      error: 'Password baru minimal 8 karakter.',
+    };
+  }
+
+  if (trimmedNew === trimmedOld) {
+    return {
+      success: false,
+      error: 'Password baru tidak boleh sama dengan password lama.',
+    };
+  }
+
+  // 3. Validasi Konfirmasi Password
+  if (confirmPassword !== undefined && trimmedNew !== confirmPassword.trim()) {
+    return {
+      success: false,
+      error: 'Konfirmasi password tidak sama dengan password baru.',
     };
   }
 
   try {
-    // 1. If Supabase is connected and has active user, update via official Supabase Auth API
+    // 4. Update Supabase Auth user if available
     const supabase = getSupabase();
     if (supabase) {
       try {
         const { data: userData } = await supabase.auth.getUser();
         if (userData?.user) {
           const { error: authError } = await supabase.auth.updateUser({
-            password: trimmed,
+            password: trimmedNew,
           });
           if (authError) {
             console.warn('[Supabase Auth Update Warning]', authError.message);
@@ -200,17 +274,17 @@ export async function changeAdminPassword(
       }
     }
 
-    // 2. Hash password with SHA-256 and store ONLY hash
-    const newHash = await hashPasswordSha256(trimmed);
-    localStorage.setItem(PASSWORD_HASH_KEY, newHash);
+    // 5. Hash new password with SHA-256 and store versioned hash
+    const newHash = await hashPasswordSha256(trimmedNew);
+    saveStoredPasswordHash(newHash);
     localStorage.removeItem(LEGACY_PIN_KEY); // Purge any legacy plaintext
 
-    // 3. Maintain valid authenticated session
+    // 6. Maintain valid authenticated session
     setAdminAuthenticated(true);
 
     return {
       success: true,
-      message: 'Password Admin/Guru berhasil diperbarui secara aman.',
+      message: 'Password berhasil diubah.',
     };
   } catch (err: any) {
     return {

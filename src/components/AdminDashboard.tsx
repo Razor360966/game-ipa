@@ -46,6 +46,7 @@ import {
   ArrowUp,
   ArrowDown,
   LogOut,
+  KeyRound,
 } from 'lucide-react';
 import {
   GameState,
@@ -59,6 +60,7 @@ import {
   MultiPartConfig,
   MultiPartItem,
   PlaylistMode,
+  QuestionPlaylist,
 } from '../types';
 import {
   COLOR_MAP,
@@ -66,10 +68,14 @@ import {
   generateTeamCardDecks,
   validateDecksAndQuestions,
   getUniqueQuestionCategories,
+  getQuestionPlaylists,
   filterQuestionsByCategory,
+  normalizeCategoryKey,
+  getTopicIcon,
 } from '../utils/presets';
 import { sound } from '../utils/sound';
 import { AccountSecuritySection } from './AccountSecuritySection';
+import { ChangePasswordModal } from './ChangePasswordModal';
 import { PlaylistManager } from './PlaylistManager';
 
 interface AdminDashboardProps {
@@ -167,6 +173,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [showFinalizeModal, setShowFinalizeModal] = useState(false);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [isLockingOrder, setIsLockingOrder] = useState(false);
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
   const isOrderLocked = Boolean(gameState.orderLocked);
   const [questionForm, setQuestionForm] = useState<{
     code: string;
@@ -263,7 +270,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return masterQuestions && masterQuestions.length > 0 ? masterQuestions : questions;
   }, [masterQuestions, questions]);
 
-  // Available topics derived from Master Pool
+  // Auto Playlists generated dynamically from Master Question categories (Single Source of Truth)
+  const autoPlaylists: QuestionPlaylist[] = useMemo(() => {
+    return getQuestionPlaylists(masterPool);
+  }, [masterPool]);
+
+  // Available topic category strings derived from Master Pool
   const availableTopics = useMemo(() => {
     return getUniqueQuestionCategories(masterPool);
   }, [masterPool]);
@@ -281,7 +293,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onUpdateSettings({ ...matchForm, selectedTopic: topic });
     }
     sound.playClick();
-    showToast(topic ? `Playlist topik diubah ke: "${topic}" 📚` : 'Menampilkan semua topik soal (Semua Topik) 📚');
+    if (!topic) {
+      showToast('Menampilkan semua topik soal (Semua Topik) 📚');
+    } else {
+      const pl = autoPlaylists.find((p) => p.name.toLowerCase() === topic.trim().toLowerCase());
+      const countText = pl ? ` (${pl.count} soal)` : '';
+      showToast(`Playlist topik diubah ke: "${topic}"${countText} 📚`);
+    }
   };
 
   // Feedback Notification Banner
@@ -917,6 +935,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span>PENGATURAN</span>
           </button>
 
+          {/* Quick Change Password Button */}
+          <button
+            id="btn-header-change-password"
+            type="button"
+            onClick={() => {
+              sound.playClick();
+              setIsChangePasswordModalOpen(true);
+            }}
+            className="px-3.5 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-400/40 text-purple-300 hover:text-purple-200 font-bold text-xs flex items-center gap-2 cursor-pointer transition-all backdrop-blur-md"
+            title="Ganti Password Admin / Guru"
+          >
+            <KeyRound className="w-4 h-4 text-purple-400" />
+            <span className="hidden sm:inline">GANTI PASSWORD</span>
+          </button>
+
           {/* Tombol Mulai Pertandingan di Akun Admin */}
           {gameStatus === 'running' ? (
             <button
@@ -1535,17 +1568,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           isOrderLocked ? 'opacity-60 cursor-not-allowed bg-slate-900/50' : ''
                         }`}
                       >
-                        <option value="" className="bg-slate-900 text-white">
-                          Semua Topik ({masterPool.length} Soal Master)
-                        </option>
-                        {availableTopics.map((topic) => {
-                          const count = masterPool.filter((q) => q.category === topic).length;
-                          return (
-                            <option key={topic} value={topic} className="bg-slate-900 text-white">
-                              Topik: {topic} ({count} Soal)
-                            </option>
-                          );
-                        })}
+                        {autoPlaylists.map((pl) => (
+                          <option key={pl.id} value={pl.isDefaultAll ? '' : pl.name} className="bg-slate-900 text-white">
+                            {pl.icon ? `${pl.icon} ` : ''}{pl.name} — {pl.count} Soal
+                          </option>
+                        ))}
                       </select>
                       <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
                         ▼
@@ -2524,17 +2551,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       }`}
                       title={isOrderLocked ? 'Urutan terkunci. Topik tidak dapat diubah.' : 'Pilih Topik Soal'}
                     >
-                      <option value="" className="bg-slate-900 text-white">
-                        Semua Topik ({masterPool.length} Soal Master)
-                      </option>
-                      {availableTopics.map((topic) => {
-                        const count = masterPool.filter((q) => q.category === topic).length;
-                        return (
-                          <option key={topic} value={topic} className="bg-slate-900 text-white">
-                            Topik: {topic} ({count} Soal)
-                          </option>
-                        );
-                      })}
+                      {autoPlaylists.map((pl) => (
+                        <option key={pl.id} value={pl.isDefaultAll ? '' : pl.name} className="bg-slate-900 text-white">
+                          {pl.icon ? `${pl.icon} ` : ''}{pl.name} ({pl.count} Soal)
+                        </option>
+                      ))}
                     </select>
                     <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-[10px] font-bold">
                       ▼
@@ -3663,20 +3684,44 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-300 uppercase">Kategori / Topik</label>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-300 uppercase">
+                      Kategori / Topik
+                    </label>
+                    <span className="text-[10px] text-cyan-400 font-bold">Auto Playlist Source</span>
+                  </div>
                   <input
                     type="text"
                     list="category-topic-options"
                     value={questionForm.category}
                     onChange={(e) => setQuestionForm({ ...questionForm, category: e.target.value })}
-                    placeholder="Contoh: Pengukuran Panjang"
-                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
+                    placeholder="Ketik topik baru atau pilih (misal: Suhu)"
+                    className="w-full bg-slate-950 border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
                   />
                   <datalist id="category-topic-options">
                     {availableTopics.map((top) => (
                       <option key={top} value={top} />
                     ))}
                   </datalist>
+                  {/* Quick suggestion chips */}
+                  {availableTopics.length > 0 && (
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {availableTopics.slice(0, 5).map((top) => (
+                        <button
+                          key={top}
+                          type="button"
+                          onClick={() => setQuestionForm({ ...questionForm, category: top })}
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors cursor-pointer ${
+                            questionForm.category?.trim().toLowerCase() === top.trim().toLowerCase()
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/40'
+                              : 'bg-white/5 text-slate-400 border-white/10 hover:text-slate-200'
+                          }`}
+                        >
+                          {top}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-1.5">
@@ -4171,6 +4216,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       )}
+      {/* ========================================================= */}
+      {/* 12. MODAL GANTI PASSWORD ADMIN */}
+      {/* ========================================================= */}
+      <ChangePasswordModal
+        isOpen={isChangePasswordModalOpen}
+        onClose={() => setIsChangePasswordModalOpen(false)}
+        onSuccessToast={(msg) => showToast(msg, 'success')}
+        onErrorToast={(msg) => showToast(msg, 'error')}
+      />
     </div>
   );
 };

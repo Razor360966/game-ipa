@@ -1,5 +1,17 @@
 import React, { useState } from 'react';
-import { Shield, KeyRound, Lock, Eye, EyeOff, Check, AlertTriangle, Loader2, CheckCircle2 } from 'lucide-react';
+import {
+  Shield,
+  KeyRound,
+  Lock,
+  Eye,
+  EyeOff,
+  Check,
+  X,
+  AlertTriangle,
+  Loader2,
+  CheckCircle2,
+  RotateCcw,
+} from 'lucide-react';
 import { changeAdminPassword } from '../utils/auth';
 import { sound } from '../utils/sound';
 
@@ -12,9 +24,11 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
   onSuccessToast,
   onErrorToast,
 }) => {
-  const [oldPassword, setOldPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [form, setForm] = useState({
+    oldPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  });
 
   const [showOldPassword, setShowOldPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -24,54 +38,86 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Real-time validation indicators
+  const isMinLength = form.newPassword.trim().length >= 8;
+  const isMatchConfirm =
+    form.confirmPassword.trim().length > 0 && form.newPassword.trim() === form.confirmPassword.trim();
+  const isDifferentFromOld =
+    form.newPassword.trim().length > 0 &&
+    form.oldPassword.trim().length > 0 &&
+    form.newPassword.trim() !== form.oldPassword.trim();
+
+  const handleResetForm = () => {
+    setForm({
+      oldPassword: '',
+      newPassword: '',
+      confirmPassword: '',
+    });
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    sound.playClick();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    // Client-side validations
-    if (!oldPassword) {
-      setErrorMessage('Masukkan password lama / PIN saat ini.');
+    const oldPass = form.oldPassword.trim();
+    const newPass = form.newPassword.trim();
+    const confirmPass = form.confirmPassword.trim();
+
+    // 1. Validasi Password Lama Terisi
+    if (!oldPass) {
+      setErrorMessage('Password lama / PIN saat ini wajib diisi.');
+      sound.playWrong();
       return;
     }
 
-    if (!newPassword || newPassword.length < 8) {
-      setErrorMessage('Password baru minimal harus 8 karakter.');
+    // 2. Validasi Password Baru
+    if (!newPass || newPass.length < 8) {
+      setErrorMessage('Password baru minimal 8 karakter.');
+      sound.playWrong();
       return;
     }
 
-    if (newPassword !== confirmPassword) {
-      setErrorMessage('Konfirmasi password baru tidak cocok. Periksa kembali.');
-      return;
-    }
-
-    if (newPassword === oldPassword) {
+    if (newPass === oldPass) {
       setErrorMessage('Password baru tidak boleh sama dengan password lama.');
+      sound.playWrong();
+      return;
+    }
+
+    // 3. Validasi Konfirmasi
+    if (newPass !== confirmPass) {
+      setErrorMessage('Konfirmasi password tidak sama dengan password baru.');
+      sound.playWrong();
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const res = await changeAdminPassword(oldPassword, newPassword);
+      const res = await changeAdminPassword(oldPass, newPass, confirmPass);
       if (res.success) {
         sound.playCorrect();
-        setSuccessMessage('Password Guru / Admin berhasil diperbarui dengan aman!');
-        setOldPassword('');
-        setNewPassword('');
-        setConfirmPassword('');
+        setSuccessMessage('Password berhasil diubah. Akun Admin kini terlindungi!');
+        setForm({
+          oldPassword: '',
+          newPassword: '',
+          confirmPassword: '',
+        });
         if (onSuccessToast) {
-          onSuccessToast('Password Admin berhasil diubah dan dienkripsi SHA-256.');
+          onSuccessToast('Password Admin berhasil diubah.');
         }
       } else {
         sound.playWrong();
-        setErrorMessage(res.error || 'Gagal mengubah password.');
+        setErrorMessage(res.error || 'Password lama tidak benar.');
         if (onErrorToast) {
-          onErrorToast(res.error || 'Gagal mengubah password.');
+          onErrorToast(res.error || 'Password lama tidak benar.');
         }
       }
     } catch (err: any) {
       sound.playWrong();
-      const msg = err?.message || 'Terjadi kesalahan sistem saat memperbarui password.';
+      const msg = err?.message || 'Terjadi kesalahan saat mengubah password.';
       setErrorMessage(msg);
       if (onErrorToast) {
         onErrorToast(msg);
@@ -109,10 +155,10 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
       <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-start gap-3">
         <KeyRound className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
         <div className="text-xs text-slate-300 space-y-1">
-          <p className="font-bold text-white">Standar Keamanan:</p>
+          <p className="font-bold text-white">Panduan Penggantian Password:</p>
           <p className="text-slate-400">
-            Password baru minimal <strong>8 karakter</strong>. Password dienkripsi dengan standar kriptografi 
-            (SHA-256) dan tidak pernah disimpan dalam bentuk teks biasa (plaintext) di penyimpanan publik.
+            Masukkan password lama (default awal: <code className="text-cyan-300 bg-white/10 px-1.5 py-0.5 rounded font-mono">123456</code>). 
+            Password baru harus minimal <strong>8 karakter</strong> dan tidak pernah disimpan dalam bentuk plaintext.
           </p>
         </div>
       </div>
@@ -135,18 +181,22 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
       {/* Password Change Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Old Password */}
+          {/* 1. Old Password */}
           <div className="space-y-1.5">
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Password Lama / PIN Saat Ini
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+              <span>Password Lama</span>
+              <span className="text-[10px] text-slate-400 font-normal">Wajib</span>
             </label>
             <div className="relative">
               <input
                 id="input-old-password"
                 type={showOldPassword ? 'text' : 'password'}
-                value={oldPassword}
-                onChange={(e) => setOldPassword(e.target.value)}
-                placeholder="Masukkan password lama"
+                value={form.oldPassword}
+                onChange={(e) => {
+                  setForm({ ...form, oldPassword: e.target.value });
+                  if (errorMessage) setErrorMessage(null);
+                }}
+                placeholder="Masukkan password lama..."
                 className="w-full bg-slate-950/80 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-2.5 text-sm font-semibold text-white placeholder:text-slate-600 outline-none transition-all pr-10"
                 autoComplete="current-password"
               />
@@ -161,18 +211,22 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
             </div>
           </div>
 
-          {/* New Password */}
+          {/* 2. New Password */}
           <div className="space-y-1.5">
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Password Baru (Min. 8 Karakter)
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+              <span>Password Baru</span>
+              <span className="text-[10px] text-slate-400 font-normal">Min. 8 Karakter</span>
             </label>
             <div className="relative">
               <input
                 id="input-new-password"
                 type={showNewPassword ? 'text' : 'password'}
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Minimal 8 karakter"
+                value={form.newPassword}
+                onChange={(e) => {
+                  setForm({ ...form, newPassword: e.target.value });
+                  if (errorMessage) setErrorMessage(null);
+                }}
+                placeholder="Minimal 8 karakter..."
                 className="w-full bg-slate-950/80 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-2.5 text-sm font-semibold text-white placeholder:text-slate-600 outline-none transition-all pr-10"
                 autoComplete="new-password"
               />
@@ -187,18 +241,22 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
             </div>
           </div>
 
-          {/* Confirm New Password */}
+          {/* 3. Confirm New Password */}
           <div className="space-y-1.5">
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Konfirmasi Password Baru
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+              <span>Konfirmasi Password Baru</span>
+              <span className="text-[10px] text-slate-400 font-normal">Cocokkan</span>
             </label>
             <div className="relative">
               <input
                 id="input-confirm-password"
                 type={showConfirmPassword ? 'text' : 'password'}
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Ulangi password baru"
+                value={form.confirmPassword}
+                onChange={(e) => {
+                  setForm({ ...form, confirmPassword: e.target.value });
+                  if (errorMessage) setErrorMessage(null);
+                }}
+                placeholder="Ketik ulang password baru..."
                 className="w-full bg-slate-950/80 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-2.5 text-sm font-semibold text-white placeholder:text-slate-600 outline-none transition-all pr-10"
                 autoComplete="new-password"
               />
@@ -214,8 +272,75 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
           </div>
         </div>
 
-        {/* Action Button */}
-        <div className="flex justify-end pt-2">
+        {/* Real-time Checklist Indicators */}
+        <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-white/10 space-y-2">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            Indikator Kelayakan Password:
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-medium">
+            {/* Length Indicator */}
+            <div
+              className={`flex items-center gap-2 p-2 rounded-xl border transition-all ${
+                form.newPassword.length === 0
+                  ? 'bg-white/5 border-white/10 text-slate-400'
+                  : isMinLength
+                  ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                  : 'bg-rose-500/15 border-rose-400/40 text-rose-300'
+              }`}
+            >
+              {isMinLength ? <Check className="w-4 h-4 text-emerald-400" /> : <X className="w-4 h-4 text-rose-400" />}
+              <span>Minimal 8 karakter</span>
+            </div>
+
+            {/* Match Indicator */}
+            <div
+              className={`flex items-center gap-2 p-2 rounded-xl border transition-all ${
+                form.confirmPassword.length === 0
+                  ? 'bg-white/5 border-white/10 text-slate-400'
+                  : isMatchConfirm
+                  ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                  : 'bg-rose-500/15 border-rose-400/40 text-rose-300'
+              }`}
+            >
+              {isMatchConfirm ? (
+                <Check className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <X className="w-4 h-4 text-rose-400" />
+              )}
+              <span>{isMatchConfirm ? 'Password baru dan konfirmasi sama' : 'Password belum sama'}</span>
+            </div>
+
+            {/* Different from old Indicator */}
+            <div
+              className={`flex items-center gap-2 p-2 rounded-xl border transition-all ${
+                form.newPassword.length === 0 || form.oldPassword.length === 0
+                  ? 'bg-white/5 border-white/10 text-slate-400'
+                  : isDifferentFromOld
+                  ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                  : 'bg-rose-500/15 border-rose-400/40 text-rose-300'
+              }`}
+            >
+              {isDifferentFromOld ? (
+                <Check className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <X className="w-4 h-4 text-rose-400" />
+              )}
+              <span>Berbeda dari password lama</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons: Simpan & Batal */}
+        <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+          <button
+            type="button"
+            onClick={handleResetForm}
+            className="px-5 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Batal</span>
+          </button>
+
           <button
             id="btn-submit-change-password"
             type="submit"
@@ -230,7 +355,7 @@ export const AccountSecuritySection: React.FC<AccountSecuritySectionProps> = ({
             ) : (
               <>
                 <Check className="w-4 h-4" />
-                <span>Simpan Password Baru</span>
+                <span>Simpan Password</span>
               </>
             )}
           </button>

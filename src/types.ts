@@ -76,6 +76,16 @@ export type QuestionCardStatus = 'unanswered' | 'correct' | 'wrong' | 'locked';
 
 export type PlaylistMode = 'all' | 'topic' | 'custom';
 
+export interface QuestionPlaylist {
+  id: string; // e.g. "all", "suhu", "pengukuran", "tanpa-topik"
+  name: string; // Display name e.g. "Semua Topik", "Suhu", "Pengukuran"
+  count: number; // Total number of questions in playlist
+  questionIds: string[];
+  questions: Question[];
+  icon?: string; // Visual topic emoji e.g. "🌡", "📏", "💨", "⚡"
+  isDefaultAll?: boolean;
+}
+
 export interface TeamCardAssignment {
   cardNumber: number; // 1, 2, 3... (Physical card number given to student)
   cardCode: string; // e.g. "ALP-01"

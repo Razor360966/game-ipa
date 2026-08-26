@@ -111,14 +111,14 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
                   setPin(e.target.value);
                   if (error) setError(null);
                 }}
-                placeholder="Masukkan PIN Admin..."
+                placeholder="Masukkan password admin..."
                 autoFocus
                 className="w-full bg-slate-950/80 border border-white/15 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 rounded-2xl pl-10 pr-11 py-3 text-sm font-mono font-bold text-white outline-none transition-all placeholder:font-sans placeholder:font-normal placeholder:text-slate-500"
               />
               <button
                 type="button"
                 onClick={() => setShowPin(!showPin)}
-                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1 cursor-pointer"
                 title={showPin ? 'Sembunyikan' : 'Tampilkan'}
               >
                 {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -129,31 +129,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
                 <span>⚠️</span> {error}
               </p>
             )}
-          </div>
-
-          {/* Quick PIN Pills for Convenience */}
-          <div className="flex items-center gap-2 pt-1">
-            <span className="text-[11px] text-slate-400">Pilihan Cepat:</span>
-            <button
-              type="button"
-              onClick={() => {
-                setPin('123456');
-                setError(null);
-              }}
-              className="text-[11px] font-mono px-2 py-0.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-cyan-300"
-            >
-              123456
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setPin('admin');
-                setError(null);
-              }}
-              className="text-[11px] font-mono px-2 py-0.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-cyan-300"
-            >
-              admin
-            </button>
           </div>
 
           {/* Remember Me */}

@@ -2,22 +2,21 @@ import React, { useState, useMemo } from 'react';
 import {
   Layers,
   CheckSquare,
-  Square,
   Sparkles,
   Search,
   Check,
   AlertTriangle,
   Lock,
-  ListOrdered,
   Eye,
   EyeOff,
   Filter,
   CheckCircle2,
-  Trash2,
   BookOpen,
+  FolderSync,
+  Tag,
 } from 'lucide-react';
-import { Question, PlaylistMode, GameSettings } from '../types';
-import { getUniqueQuestionCategories, filterQuestionsByPlaylist } from '../utils/presets';
+import { Question, PlaylistMode, GameSettings, QuestionPlaylist } from '../types';
+import { getQuestionPlaylists, filterQuestionsByPlaylist, normalizeCategoryKey } from '../utils/presets';
 import { sound } from '../utils/sound';
 
 interface PlaylistManagerProps {
@@ -34,6 +33,7 @@ interface PlaylistManagerProps {
     }
   ) => void;
   onShowToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
+  onToggleOrderLock?: (locked: boolean) => Promise<{ success: boolean; error?: string }>;
 }
 
 export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
@@ -42,6 +42,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
   isOrderLocked,
   onApplyPlaylist,
   onShowToast,
+  onToggleOrderLock,
 }) => {
   // Mode selection: 'all' | 'topic' | 'custom'
   const [mode, setMode] = useState<PlaylistMode>(() => {
@@ -55,7 +56,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
 
   // Mode 'custom' states
   const [playlistName, setPlaylistName] = useState<string>(() => {
-    return currentSettings.playlistName || 'Custom Playlist 1';
+    return currentSettings.playlistName || 'Custom Playlist';
   });
 
   const [selectedTopicsFilter, setSelectedTopicsFilter] = useState<string[]>(() => {
@@ -66,30 +67,54 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
     if (currentSettings.customQuestionIds && currentSettings.customQuestionIds.length > 0) {
       return currentSettings.customQuestionIds;
     }
-    // Default to all master questions if custom wasn't configured yet
     return masterQuestions.map((q) => q.id);
   });
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [showPreviewList, setShowPreviewList] = useState(false);
+  const [showPreviewList, setShowPreviewList] = useState(true);
+  const [isLocking, setIsLocking] = useState(false);
 
-  // Available topics in master bank
-  const availableTopics = useMemo(() => {
-    return getUniqueQuestionCategories(masterQuestions);
+  // Auto-generate topic playlists from master questions (Single Source of Truth)
+  const autoPlaylists: QuestionPlaylist[] = useMemo(() => {
+    return getQuestionPlaylists(masterQuestions);
   }, [masterQuestions]);
 
-  // Filtered master questions for selection UI (in custom mode)
+  // Active playlist descriptor
+  const activePlaylist = useMemo(() => {
+    if (mode === 'all') {
+      return autoPlaylists.find((p) => p.isDefaultAll) || autoPlaylists[0];
+    }
+    if (mode === 'topic') {
+      if (!selectedSingleTopic) return autoPlaylists[0];
+      const normKey = normalizeCategoryKey(selectedSingleTopic);
+      return autoPlaylists.find((p) => p.id === normKey || p.name.toLowerCase() === normKey) || {
+        id: normKey,
+        name: selectedSingleTopic,
+        count: masterQuestions.filter((q) => normalizeCategoryKey(q.category) === normKey).length,
+        questionIds: [],
+        questions: [],
+        icon: '📚',
+      };
+    }
+    return {
+      id: 'custom',
+      name: playlistName || 'Custom Playlist',
+      count: selectedQuestionIds.length,
+      questionIds: selectedQuestionIds,
+      questions: [],
+      icon: '✨',
+    };
+  }, [autoPlaylists, mode, selectedSingleTopic, playlistName, selectedQuestionIds, masterQuestions]);
+
+  // Filtered master questions for custom selection UI
   const displayedQuestions = useMemo(() => {
     return masterQuestions.filter((q) => {
-      // Topic filter in custom mode
       if (selectedTopicsFilter.length > 0) {
-        const cat = (q.category || '').trim();
-        if (!selectedTopicsFilter.includes(cat)) {
-          return false;
-        }
+        const normCat = normalizeCategoryKey(q.category);
+        const matchTopic = selectedTopicsFilter.some((t) => normalizeCategoryKey(t) === normCat);
+        if (!matchTopic) return false;
       }
 
-      // Search query filter
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const textMatch = (q.questionText || '').toLowerCase().includes(query);
@@ -115,6 +140,22 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
     });
   }, [masterQuestions, mode, selectedSingleTopic, selectedTopicsFilter, selectedQuestionIds]);
 
+  // Select a category playlist directly
+  const handleSelectCategoryPlaylist = (playlist: QuestionPlaylist) => {
+    if (isOrderLocked) return;
+    if (playlist.isDefaultAll) {
+      setMode('all');
+      setSelectedSingleTopic('');
+    } else if (playlist.id === 'uncategorized') {
+      setMode('topic');
+      setSelectedSingleTopic('Tanpa Topik');
+    } else {
+      setMode('topic');
+      setSelectedSingleTopic(playlist.name);
+    }
+    sound.playClick();
+  };
+
   // Toggle single question in custom list
   const handleToggleQuestion = (id: string) => {
     if (isOrderLocked) return;
@@ -127,7 +168,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
     });
   };
 
-  // Select all currently displayed questions
+  // Select all displayed questions
   const handleSelectAllDisplayed = () => {
     if (isOrderLocked) return;
     const idsToAdd = displayedQuestions.map((q) => q.id);
@@ -138,7 +179,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
     sound.playClick();
   };
 
-  // Deselect all currently displayed questions
+  // Deselect all displayed questions
   const handleDeselectAllDisplayed = () => {
     if (isOrderLocked) return;
     const idsToRemove = new Set(displayedQuestions.map((q) => q.id));
@@ -149,9 +190,11 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
   // Toggle topic checkbox in custom filter
   const handleToggleTopicFilter = (topic: string) => {
     if (isOrderLocked) return;
+    const norm = normalizeCategoryKey(topic);
     setSelectedTopicsFilter((prev) => {
-      if (prev.includes(topic)) {
-        return prev.filter((t) => t !== topic);
+      const has = prev.some((t) => normalizeCategoryKey(t) === norm);
+      if (has) {
+        return prev.filter((t) => normalizeCategoryKey(t) !== norm);
       } else {
         return [...prev, topic];
       }
@@ -166,11 +209,11 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
     }
 
     if (previewQuestions.length === 0) {
-      onShowToast('Playlist belum memiliki soal. Pilih topik atau soal terlebih dahulu.', 'error');
+      onShowToast('Playlist belum memiliki soal. Pilih topik atau buat soal baru terlebih dahulu.', 'error');
       return;
     }
 
-    let finalName = 'Semua Soal Master';
+    let finalName = 'Semua Topik';
     if (mode === 'topic') {
       finalName = selectedSingleTopic ? `Topik: ${selectedSingleTopic}` : 'Semua Topik';
     } else if (mode === 'custom') {
@@ -185,7 +228,32 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
     });
 
     sound.playStart();
-    onShowToast(`🎉 Playlist "${finalName}" berhasil diterapkan! (${previewQuestions.length} soal dimuat ke pertandingan)`, 'success');
+    onShowToast(`🎉 Playlist "${finalName}" berhasil diterapkan! (${previewQuestions.length} soal siap dimainkan)`, 'success');
+  };
+
+  // Quick finalize & lock from playlist card
+  const handleFinalizeAndLock = async () => {
+    if (!onToggleOrderLock) return;
+    if (previewQuestions.length === 0) {
+      onShowToast('Tidak ada soal untuk difinalisasi.', 'error');
+      return;
+    }
+    setIsLocking(true);
+    try {
+      // First apply current playlist
+      handleApply();
+      const res = await onToggleOrderLock(true);
+      if (res && !res.success) {
+        onShowToast(res.error || 'Gagal mengunci urutan pertandingan.', 'error');
+      } else {
+        sound.playStart();
+        onShowToast('🔒 Urutan soal resmi berhasil difinalisasi & dikunci! Kartu siap dicetak.', 'success');
+      }
+    } catch (e: any) {
+      onShowToast(e?.message || 'Gagal memfinalisasi urutan.', 'error');
+    } finally {
+      setIsLocking(false);
+    }
   };
 
   return (
@@ -199,7 +267,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-base sm:text-lg font-bold text-white uppercase tracking-wider">
-                CUSTOM QUESTION PLAYLIST & SNAPSHOT
+                AUTO PLAYLIST SOAL BERBASIS TOPIK
               </h3>
               {isOrderLocked && (
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center gap-1">
@@ -209,14 +277,14 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-400">
-              Pilih mode playlist untuk pertandingan: Semua Soal, Satu Topik, atau Custom Pilihan Soal
+              Kategori pada soal otomatis membentuk playlist pertandingan tanpa perlu dibuat manual
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
           <span className="text-xs px-3 py-1.5 rounded-xl bg-cyan-400/10 border border-cyan-400/30 text-cyan-300 font-mono font-bold">
-            {previewQuestions.length} Soal Terpilih
+            {previewQuestions.length} Soal Siap Dimainkan
           </span>
         </div>
       </div>
@@ -232,135 +300,185 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
         </div>
       )}
 
-      {/* Mode Selector Tabs */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {/* Mode: Semua Soal */}
-        <button
-          type="button"
-          disabled={isOrderLocked}
-          onClick={() => {
-            if (!isOrderLocked) {
-              setMode('all');
-              sound.playClick();
-            }
-          }}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            mode === 'all'
-              ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_20px_rgba(6,182,212,0.2)] ring-1 ring-cyan-400'
-              : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200 hover:border-white/20'
-          } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-        >
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-              <BookOpen className="w-4 h-4 text-cyan-400" />
-              1. Semua Soal
-            </span>
-            {mode === 'all' && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
-          </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
-            Gunakan seluruh koleksi soal master ({masterQuestions.length} soal) tanpa filter.
-          </p>
-        </button>
+      {/* AUTO PLAYLIST SELECTION (The Main Topic Selector requested by User) */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+            <FolderSync className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Pilih Topik / Kategori Soal (Auto-Generated)</span>
+          </label>
+          <span className="text-[11px] text-slate-400">
+            Total {autoPlaylists.length} Playlist Tersedia
+          </span>
+        </div>
 
-        {/* Mode: Satu Topik */}
-        <button
-          type="button"
-          disabled={isOrderLocked}
-          onClick={() => {
-            if (!isOrderLocked) {
-              setMode('topic');
+        {/* Dropdown Selector with Clean Format */}
+        <div className="relative">
+          <select
+            id="select-auto-playlist-dropdown"
+            value={mode === 'all' ? 'all' : selectedSingleTopic || 'all'}
+            disabled={isOrderLocked}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === 'all') {
+                setMode('all');
+                setSelectedSingleTopic('');
+              } else {
+                setMode('topic');
+                setSelectedSingleTopic(val);
+              }
               sound.playClick();
-            }
-          }}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            mode === 'topic'
-              ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_20px_rgba(6,182,212,0.2)] ring-1 ring-cyan-400'
-              : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200 hover:border-white/20'
-          } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-        >
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-              <Filter className="w-4 h-4 text-cyan-400" />
-              2. Satu Topik
-            </span>
-            {mode === 'topic' && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
-          </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
-            Filter pertandingan berdasarkan satu topik/kategori spesifik.
-          </p>
-        </button>
+            }}
+            className={`w-full bg-slate-950/90 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-3.5 text-sm font-bold text-white outline-none cursor-pointer appearance-none ${
+              isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          >
+            {autoPlaylists.map((pl) => {
+              const val = pl.isDefaultAll ? 'all' : pl.name;
+              return (
+                <option key={pl.id} value={val} className="bg-slate-900 text-white font-medium">
+                  {pl.icon ? `${pl.icon} ` : ''}{pl.name} — {pl.count} soal
+                </option>
+              );
+            })}
+          </select>
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
+            ▼
+          </span>
+        </div>
 
-        {/* Mode: Custom Playlist */}
-        <button
-          type="button"
-          disabled={isOrderLocked}
-          onClick={() => {
-            if (!isOrderLocked) {
-              setMode('custom');
-              sound.playClick();
-            }
-          }}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            mode === 'custom'
-              ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_20px_rgba(6,182,212,0.2)] ring-1 ring-cyan-400'
-              : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200 hover:border-white/20'
-          } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-        >
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-cyan-400" />
-              3. Custom Playlist
-            </span>
-            {mode === 'custom' && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
-          </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
-            Bebas memilih soal individual, kombinasi multi-topik, dan nama babak kustom.
-          </p>
-        </button>
+        {/* Interactive Visual Topic Cards / Chips */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 pt-1">
+          {autoPlaylists.map((pl) => {
+            const isSelected =
+              (pl.isDefaultAll && mode === 'all') ||
+              (!pl.isDefaultAll && mode === 'topic' && normalizeCategoryKey(selectedSingleTopic) === normalizeCategoryKey(pl.name));
+
+            return (
+              <button
+                key={pl.id}
+                type="button"
+                disabled={isOrderLocked}
+                onClick={() => handleSelectCategoryPlaylist(pl)}
+                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between gap-2 ${
+                  isSelected
+                    ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_15px_rgba(6,182,212,0.25)] ring-1 ring-cyan-400 scale-[1.02]'
+                    : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200 hover:border-white/20'
+                } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-lg shrink-0">{pl.icon || '📚'}</span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold truncate text-slate-200">{pl.name}</p>
+                    <p className="text-[10px] text-cyan-400 font-mono font-bold">{pl.count} soal</p>
+                  </div>
+                </div>
+                {isSelected && <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Mode 2 Configuration: Satu Topik */}
-      {mode === 'topic' && (
-        <div className="p-5 rounded-2xl bg-slate-950/60 border border-white/10 space-y-4 animate-fade-in">
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Pilih Kategori / Topik Soal:
-            </label>
-            <div className="relative">
-              <select
-                id="select-playlist-single-topic"
-                value={selectedSingleTopic}
-                disabled={isOrderLocked}
-                onChange={(e) => setSelectedSingleTopic(e.target.value)}
-                className="w-full bg-slate-900 border border-white/15 focus:border-cyan-400 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none cursor-pointer appearance-none"
-              >
-                <option value="" className="bg-slate-900 text-white">
-                  -- Pilih Topik Soal --
-                </option>
-                {availableTopics.map((topic) => {
-                  const count = masterQuestions.filter((q) => (q.category || '').trim() === topic.trim()).length;
-                  return (
-                    <option key={topic} value={topic} className="bg-slate-900 text-white">
-                      {topic} ({count} Soal Tersedia)
-                    </option>
-                  );
-                })}
-              </select>
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
-                ▼
+      {/* Mode Switcher Tabs (All / Topic / Custom Advanced) */}
+      <div className="pt-2">
+        <div className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+          <span>Mode Playlist Alternatif</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Mode: Semua Soal */}
+          <button
+            type="button"
+            disabled={isOrderLocked}
+            onClick={() => {
+              if (!isOrderLocked) {
+                setMode('all');
+                setSelectedSingleTopic('');
+                sound.playClick();
+              }
+            }}
+            className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+              mode === 'all'
+                ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_15px_rgba(6,182,212,0.2)] ring-1 ring-cyan-400'
+                : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200'
+            } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-black uppercase flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4 text-cyan-400" />
+                1. Semua Topik
               </span>
+              {mode === 'all' && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
             </div>
             <p className="text-[11px] text-slate-400">
-              Pertandingan hanya akan menyajikan soal yang bertopik ini, tetap mempertahankan urutan aslinya.
+              Gunakan seluruh koleksi soal master ({masterQuestions.length} soal).
             </p>
-          </div>
+          </button>
+
+          {/* Mode: Satu Topik */}
+          <button
+            type="button"
+            disabled={isOrderLocked}
+            onClick={() => {
+              if (!isOrderLocked) {
+                setMode('topic');
+                if (!selectedSingleTopic && autoPlaylists.length > 1) {
+                  setSelectedSingleTopic(autoPlaylists[1].name);
+                }
+                sound.playClick();
+              }
+            }}
+            className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+              mode === 'topic'
+                ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_15px_rgba(6,182,212,0.2)] ring-1 ring-cyan-400'
+                : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200'
+            } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-black uppercase flex items-center gap-1.5">
+                <Filter className="w-4 h-4 text-cyan-400" />
+                2. Satu Topik
+              </span>
+              {mode === 'topic' && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Fokus pada 1 kategori saja (misal: Suhu, Pengukuran).
+            </p>
+          </button>
+
+          {/* Mode: Custom Playlist */}
+          <button
+            type="button"
+            disabled={isOrderLocked}
+            onClick={() => {
+              if (!isOrderLocked) {
+                setMode('custom');
+                sound.playClick();
+              }
+            }}
+            className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+              mode === 'custom'
+                ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-[0_0_15px_rgba(6,182,212,0.2)] ring-1 ring-cyan-400'
+                : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-slate-200'
+            } ${isOrderLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-black uppercase flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                3. Pilihan Kustom
+              </span>
+              {mode === 'custom' && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Pilih soal individual atau kombinasi topik tertentu.
+            </p>
+          </button>
         </div>
-      )}
+      </div>
 
       {/* Mode 3 Configuration: Custom Playlist Builder */}
       {mode === 'custom' && (
-        <div className="space-y-5 animate-fade-in">
-          {/* Playlist Name Input */}
+        <div className="space-y-5 animate-fade-in pt-2">
           <div className="p-5 rounded-2xl bg-slate-950/60 border border-white/10 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1.5">
@@ -384,25 +502,27 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
                   Filter Berdasarkan Topik
                 </label>
                 <div className="flex flex-wrap gap-2 pt-1">
-                  {availableTopics.map((topic) => {
-                    const isChecked = selectedTopicsFilter.includes(topic);
-                    return (
-                      <button
-                        key={topic}
-                        type="button"
-                        disabled={isOrderLocked}
-                        onClick={() => handleToggleTopicFilter(topic)}
-                        className={`px-3 py-1 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                          isChecked
-                            ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
-                            : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {isChecked ? <Check className="w-3 h-3 text-cyan-400" /> : null}
-                        <span>{topic}</span>
-                      </button>
-                    );
-                  })}
+                  {autoPlaylists
+                    .filter((p) => !p.isDefaultAll)
+                    .map((pl) => {
+                      const isChecked = selectedTopicsFilter.some((t) => normalizeCategoryKey(t) === normalizeCategoryKey(pl.name));
+                      return (
+                        <button
+                          key={pl.id}
+                          type="button"
+                          disabled={isOrderLocked}
+                          onClick={() => handleToggleTopicFilter(pl.name)}
+                          className={`px-3 py-1 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                            isChecked
+                              ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                              : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {isChecked ? <Check className="w-3 h-3 text-cyan-400" /> : null}
+                          <span>{pl.icon} {pl.name}</span>
+                        </button>
+                      );
+                    })}
                   {selectedTopicsFilter.length > 0 && (
                     <button
                       type="button"
@@ -427,7 +547,6 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
                 </h4>
               </div>
 
-              {/* Action buttons: Select all / Deselect all & Search */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -461,7 +580,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
             </div>
 
             {/* Questions Selection List */}
-            <div className="max-h-72 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+            <div className="max-h-64 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
               {displayedQuestions.length === 0 ? (
                 <div className="text-center py-6 text-slate-500 text-xs">
                   Tidak ada soal yang cocok dengan filter atau pencarian.
@@ -484,7 +603,7 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
                           type="checkbox"
                           checked={isSelected}
                           disabled={isOrderLocked}
-                          onChange={() => {}} // Handled by parent div
+                          onChange={() => {}}
                           className="w-4 h-4 rounded text-cyan-500 focus:ring-cyan-500 cursor-pointer shrink-0"
                         />
                         <span className="font-mono text-[11px] font-bold text-cyan-400 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 shrink-0">
@@ -516,57 +635,113 @@ export const PlaylistManager: React.FC<PlaylistManagerProps> = ({
       {previewQuestions.length === 0 && (
         <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-3 animate-fade-in font-medium">
           <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-          <span>Playlist belum memiliki soal. Pilih topik atau soal terlebih dahulu.</span>
+          <span>Playlist belum memiliki soal. Pilih topik yang memiliki soal atau tambahkan soal baru di Bank Soal.</span>
         </div>
       )}
 
-      {/* Preview Accordion & Apply Action Bar */}
-      <div className="pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-4">
-        <button
-          type="button"
-          onClick={() => setShowPreviewList(!showPreviewList)}
-          className="text-xs text-slate-400 hover:text-cyan-300 flex items-center gap-1.5 cursor-pointer font-semibold transition-colors"
-        >
-          {showPreviewList ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          <span>{showPreviewList ? 'Sembunyikan Preview Snapshot' : `Lihat Preview Urutan Soal (${previewQuestions.length} Soal)`}</span>
-        </button>
-
-        <button
-          id="btn-apply-playlist"
-          type="button"
-          disabled={isOrderLocked || previewQuestions.length === 0}
-          onClick={handleApply}
-          className="px-6 py-3 rounded-2xl bg-gradient-to-r from-cyan-500 via-teal-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-cyan-500/20 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-all active:scale-95"
-        >
-          <Sparkles className="w-4 h-4" />
-          <span>Gunakan Playlist Ini (Buat Snapshot)</span>
-        </button>
-      </div>
-
-      {/* Preview Questions List Modal / Accordion */}
+      {/* PREVIEW SNAPSHOT SECTION (Prompt Requirement: PLAYLIST: SUHU 01 Q01, 02 Q04, ...) */}
       {showPreviewList && previewQuestions.length > 0 && (
-        <div className="p-4 rounded-2xl bg-slate-950 border border-white/10 space-y-2 max-h-60 overflow-y-auto custom-scrollbar animate-fade-in">
-          <div className="flex items-center justify-between text-[11px] font-bold text-slate-400 uppercase border-b border-white/10 pb-2 mb-2">
-            <span>Urutan Kartu (#)</span>
-            <span>Pertanyaan & Kunci</span>
-            <span>Kategori</span>
-          </div>
-          {previewQuestions.map((q, idx) => (
-            <div key={q.id} className="flex items-center justify-between text-xs py-1 border-b border-white/5 last:border-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="font-mono text-cyan-400 font-bold w-12 shrink-0">Kartu #{idx + 1}</span>
-                <span className="font-semibold text-slate-200 truncate">{q.questionText}</span>
-              </div>
-              <div className="flex items-center gap-3 shrink-0 ml-2">
-                <span className="text-emerald-400 text-[11px] font-mono font-bold truncate max-w-[120px]">
-                  {q.correctAnswer}
-                </span>
-                <span className="text-slate-500 text-[10px]">{q.category || '-'}</span>
+        <div className="p-5 rounded-2xl bg-slate-950/80 border border-cyan-500/30 space-y-3 animate-fade-in shadow-inner">
+          <div className="flex items-center justify-between border-b border-white/10 pb-3">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{activePlaylist.icon || '📚'}</span>
+              <div>
+                <h4 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-2">
+                  <span>PLAYLIST: {activePlaylist.name.toUpperCase()}</span>
+                  <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-mono font-bold">
+                    {previewQuestions.length} Soal Terurut
+                  </span>
+                </h4>
+                <p className="text-[10px] text-slate-400">
+                  Urutan kartu pertandingan mempertahankan urutan resmi nomor soal terkecil.
+                </p>
               </div>
             </div>
-          ))}
+
+            <button
+              type="button"
+              onClick={() => setShowPreviewList(false)}
+              className="text-slate-400 hover:text-white p-1 rounded-lg text-xs flex items-center gap-1 cursor-pointer"
+            >
+              <EyeOff className="w-3.5 h-3.5" />
+              <span>Sembunyikan</span>
+            </button>
+          </div>
+
+          {/* Table of Preview Sequence */}
+          <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+            {previewQuestions.map((q, idx) => (
+              <div
+                key={q.id}
+                className="flex items-center justify-between text-xs py-2 px-3 rounded-xl bg-slate-900/60 border border-white/5 hover:border-cyan-500/20 transition-all"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="font-mono text-cyan-400 font-black text-xs w-8 shrink-0">
+                    {String(idx + 1).padStart(2, '0')}
+                  </span>
+                  <span className="font-mono text-slate-300 font-bold px-2 py-0.5 rounded bg-slate-950 border border-white/10 text-[11px] shrink-0">
+                    {q.code || `Q${String(idx + 1).padStart(2, '0')}`}
+                  </span>
+                  <span className="font-medium text-slate-200 truncate">{q.questionText}</span>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0 ml-3">
+                  <span className="text-emerald-400 font-mono text-[11px] font-bold bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded">
+                    Kunci: {q.correctAnswer}
+                  </span>
+                  {q.category && (
+                    <span className="text-slate-400 text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded-full hidden sm:inline">
+                      {q.category}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
+
+      {/* Action Bar */}
+      <div className="pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-4">
+        {!showPreviewList && (
+          <button
+            type="button"
+            onClick={() => setShowPreviewList(true)}
+            className="text-xs text-slate-400 hover:text-cyan-300 flex items-center gap-1.5 cursor-pointer font-semibold transition-colors"
+          >
+            <Eye className="w-4 h-4 text-cyan-400" />
+            <span>Lihat Urutan Snapshot ({previewQuestions.length} Soal)</span>
+          </button>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3 ml-auto">
+          {/* Apply Playlist */}
+          <button
+            id="btn-apply-playlist"
+            type="button"
+            disabled={isOrderLocked || previewQuestions.length === 0}
+            onClick={handleApply}
+            className="px-5 py-2.5 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-all active:scale-95"
+          >
+            <Tag className="w-4 h-4 text-cyan-400" />
+            <span>Terapkan Playlist</span>
+          </button>
+
+          {/* Finalize and Lock Order */}
+          {onToggleOrderLock && !isOrderLocked && (
+            <button
+              id="btn-finalize-playlist-lock"
+              type="button"
+              disabled={isLocking || previewQuestions.length === 0}
+              onClick={handleFinalizeAndLock}
+              className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-amber-500/20 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-all active:scale-95"
+            >
+              <Lock className="w-4 h-4" />
+              <span>{isLocking ? 'Mengunci...' : 'FINALISASI & KUNCI'}</span>
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

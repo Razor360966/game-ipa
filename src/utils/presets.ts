@@ -1,4 +1,4 @@
-import { Question, Team, TeamCardAssignment, TeamColor, PlaylistMode } from '../types';
+import { Question, Team, TeamCardAssignment, TeamColor, PlaylistMode, QuestionPlaylist } from '../types';
 
 export const INITIAL_TEAMS: Team[] = [
   { id: 'team-alpha', name: 'ALPHA', color: 'cyan', score: 0, correctCount: 0, wrongCount: 0 },
@@ -273,33 +273,182 @@ export const DEMO_QUESTIONS: Question[] = [
 export const DEFAULT_QUESTIONS: Question[] = DEMO_QUESTIONS;
 
 /**
+ * Returns an appropriate contextual emoji icon based on topic/category name.
+ */
+export function getTopicIcon(topicName: string): string {
+  if (!topicName) return '📚';
+  const lower = topicName.toLowerCase();
+  if (lower === 'all' || lower.includes('semua')) return '🎯';
+  if (lower.includes('suhu') || lower.includes('termometer') || lower.includes('kalor') || lower.includes('panas')) return '🌡️';
+  if (lower.includes('panjang') || lower.includes('ukur') || lower.includes('jangka') || lower.includes('mikrometer') || lower.includes('pengukuran')) return '📏';
+  if (lower.includes('tekanan') || lower.includes('gas') || lower.includes('fluida') || lower.includes('hidrostatis')) return '💨';
+  if (lower.includes('listrik') || lower.includes('energi') || lower.includes('daya') || lower.includes('tegangan') || lower.includes('arus')) return '⚡';
+  if (lower.includes('gelombang') || lower.includes('getaran') || lower.includes('bunyi') || lower.includes('frekuensi')) return '🌊';
+  if (lower.includes('massa') || lower.includes('berat') || lower.includes('neraca') || lower.includes('timbangan')) return '⚖️';
+  if (lower.includes('waktu') || lower.includes('stopwatch') || lower.includes('periode') || lower.includes('detik')) return '⏱️';
+  if (lower.includes('gerak') || lower.includes('kecepatan') || lower.includes('gaya') || lower.includes('percepatan')) return '🚀';
+  if (lower.includes('optik') || lower.includes('cahaya') || lower.includes('cermin') || lower.includes('lensa')) return '🔍';
+  if (lower.includes('sel') || lower.includes('pernapasan') || lower.includes('organ') || lower.includes('ekosistem') || lower.includes('tumbuhan') || lower.includes('hewan') || lower.includes('biologi')) return '🧬';
+  if (lower.includes('zat') || lower.includes('larutan') || lower.includes('asam') || lower.includes('basa') || lower.includes('kimia') || lower.includes('unsur') || lower.includes('senyawa')) return '🧪';
+  if (lower.includes('astronomi') || lower.includes('tata surya') || lower.includes('planet') || lower.includes('bumi') || lower.includes('bulan')) return '🪐';
+  if (lower.includes('hots') || lower.includes('olimpiade') || lower.includes('kompetisi') || lower.includes('juara')) return '🏆';
+  if (lower.includes('remedial') || lower.includes('ulangan') || lower.includes('evaluasi') || lower.includes('bab')) return '📝';
+  if (lower.includes('tanpa topik') || lower.includes('uncategorized')) return '📋';
+  return '📑';
+}
+
+/**
+ * Normalizes a category name for grouping (case-insensitive and trimmed).
+ */
+export function normalizeCategoryKey(category?: string): string {
+  if (!category) return '';
+  return category.trim().toLowerCase();
+}
+
+/**
  * Extracts unique topic/category names from a list of questions, sorted alphabetically.
- * Ignores empty/whitespace categories.
+ * Case-insensitive deduplication, preserving the first cleanest display format.
  */
 export function getUniqueQuestionCategories(questions: Question[]): string[] {
   if (!questions || questions.length === 0) return [];
-  const set = new Set<string>();
+  const map = new Map<string, string>(); // normalizedKey -> originalCleanLabel
+
   questions.forEach((q) => {
-    const cat = q.category?.trim();
-    if (cat) {
-      set.add(cat);
+    const raw = q.category?.trim();
+    if (raw) {
+      const key = normalizeCategoryKey(raw);
+      if (!map.has(key)) {
+        // Capitalize first letter of words if needed, or keep clean label
+        map.set(key, raw);
+      }
     }
   });
-  return Array.from(set).sort((a, b) => a.localeCompare(b, 'id', { sensitivity: 'base' }));
+
+  return Array.from(map.values()).sort((a, b) => a.localeCompare(b, 'id', { sensitivity: 'base' }));
+}
+
+/**
+ * Auto-generates structured Question Playlists from Master Question Bank based on question categories.
+ * Single Source of Truth: The "category" field of each question is the sole source for grouping.
+ * 
+ * Rules:
+ * 1. Takes all questions from master bank.
+ * 2. Reads `q.category`.
+ * 3. Normalizes category (e.g. "Suhu", "suhu", " Suhu " map to the same playlist).
+ * 4. Sorts questions in each playlist strictly by `orderIndex ASC` (preserving master sequence).
+ * 5. Returns "Semua Topik" as primary playlist plus all topic playlists with live counts.
+ * 6. Adds "Tanpa Topik" playlist if there are questions with empty category.
+ */
+export function getQuestionPlaylists(questions: Question[]): QuestionPlaylist[] {
+  if (!questions || questions.length === 0) {
+    return [
+      {
+        id: 'all',
+        name: 'Semua Topik',
+        count: 0,
+        questionIds: [],
+        questions: [],
+        icon: '🎯',
+        isDefaultAll: true,
+      },
+    ];
+  }
+
+  // Sort master pool by orderIndex ASC
+  const sortedMaster = [...questions].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+
+  // Map for category groups: normalizedKey -> { displayName, questions: Question[] }
+  const categoryGroups = new Map<string, { displayName: string; questions: Question[] }>();
+  const uncategorizedQuestions: Question[] = [];
+
+  sortedMaster.forEach((q) => {
+    const rawCat = q.category?.trim();
+    if (!rawCat) {
+      uncategorizedQuestions.push(q);
+      return;
+    }
+
+    const key = normalizeCategoryKey(rawCat);
+    if (!categoryGroups.has(key)) {
+      categoryGroups.set(key, {
+        displayName: rawCat,
+        questions: [q],
+      });
+    } else {
+      categoryGroups.get(key)!.questions.push(q);
+    }
+  });
+
+  // 1. Primary "Semua Topik" Playlist
+  const allPlaylist: QuestionPlaylist = {
+    id: 'all',
+    name: 'Semua Topik',
+    count: sortedMaster.length,
+    questionIds: sortedMaster.map((q) => q.id),
+    questions: sortedMaster,
+    icon: '🎯',
+    isDefaultAll: true,
+  };
+
+  // 2. Category Playlists (sorted alphabetically by display name)
+  const topicPlaylists: QuestionPlaylist[] = Array.from(categoryGroups.entries())
+    .map(([key, group]) => {
+      const qList = group.questions.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+      return {
+        id: key,
+        name: group.displayName,
+        count: qList.length,
+        questionIds: qList.map((q) => q.id),
+        questions: qList,
+        icon: getTopicIcon(group.displayName),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'id', { sensitivity: 'base' }));
+
+  // 3. Optional "Tanpa Topik" Playlist if questions without category exist
+  const result: QuestionPlaylist[] = [allPlaylist, ...topicPlaylists];
+
+  if (uncategorizedQuestions.length > 0) {
+    const sortedUncat = uncategorizedQuestions.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+    result.push({
+      id: 'uncategorized',
+      name: 'Tanpa Topik',
+      count: sortedUncat.length,
+      questionIds: sortedUncat.map((q) => q.id),
+      questions: sortedUncat,
+      icon: '📋',
+    });
+  }
+
+  return result;
 }
 
 /**
  * Filters questions by category/topic.
- * If topic is empty, undefined, or "ALL" / "Semua Topik" -> returns all questions as a shallow copy.
- * Strictly maintains order_index / sequence order.
+ * - If topic is empty, undefined, "ALL", or "Semua Topik" -> returns all questions sorted by orderIndex ASC.
+ * - If topic is "Tanpa Topik" / "uncategorized" -> returns questions with empty/whitespace category.
+ * - Otherwise, matches normalized category key.
+ * - Strictly maintains single-source orderIndex ASC.
  */
 export function filterQuestionsByCategory(questions: Question[], category?: string): Question[] {
   if (!questions || questions.length === 0) return [];
-  if (!category || !category.trim() || category.toUpperCase() === 'ALL' || category.toLowerCase() === 'semua topik') {
-    return [...questions];
+  
+  const sorted = [...questions].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+  
+  if (!category || !category.trim()) {
+    return sorted;
   }
-  const normalized = category.trim().toLowerCase();
-  return questions.filter((q) => (q.category || '').trim().toLowerCase() === normalized);
+
+  const normalized = normalizeCategoryKey(category);
+  if (normalized === 'all' || normalized === 'semua' || normalized === 'semua topik') {
+    return sorted;
+  }
+
+  if (normalized === 'tanpa topik' || normalized === 'uncategorized') {
+    return sorted.filter((q) => !q.category || !q.category.trim());
+  }
+
+  return sorted.filter((q) => normalizeCategoryKey(q.category) === normalized);
 }
 
 export interface PlaylistFilterOptions {
@@ -324,7 +473,7 @@ export function filterQuestionsByPlaylist(
   const mode = options.playlistMode || 'all';
 
   if (mode === 'all') {
-    return [...questions];
+    return filterQuestionsByCategory(questions, '');
   }
 
   if (mode === 'topic') {
@@ -336,20 +485,24 @@ export function filterQuestionsByPlaylist(
     if (customIds && customIds.length > 0) {
       const idSet = new Set(customIds);
       // Filter from master pool preserving order_index / sequence
-      return questions.filter((q) => idSet.has(q.id));
+      return [...questions]
+        .filter((q) => idSet.has(q.id))
+        .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
     }
 
     // Fallback if multiple topics selected but no individual IDs
     const topics = options.selectedTopics;
     if (topics && topics.length > 0) {
-      const normalizedTopics = new Set(topics.map((t) => t.trim().toLowerCase()));
-      return questions.filter((q) => normalizedTopics.has((q.category || '').trim().toLowerCase()));
+      const normalizedTopics = new Set(topics.map((t) => normalizeCategoryKey(t)));
+      return [...questions]
+        .filter((q) => normalizedTopics.has(normalizeCategoryKey(q.category)))
+        .sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
     }
 
-    return [...questions];
+    return filterQuestionsByCategory(questions, '');
   }
 
-  return [...questions];
+  return filterQuestionsByCategory(questions, '');
 }
 
 /**
