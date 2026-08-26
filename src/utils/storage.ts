@@ -16,6 +16,7 @@ if (typeof window !== 'undefined') {
 export const DEFAULT_SETTINGS: GameSettings = {
   matchTitle: 'MEASUREMENT BLOCK BLAST',
   roundName: 'BABAK PENYISIHAN UTAMA',
+  selectedTopic: '', // '' = Semua Topik
   durationMinutes: 10,
   questionTimeLimitSeconds: 30, // Batas waktu menjawab khusus per soal (default 30 detik)
   enableQuestionTimer: true, // Batas waktu per soal aktif
@@ -39,6 +40,7 @@ export function getInitialGameState(): GameState {
           parsed.settings = {
             ...DEFAULT_SETTINGS,
             ...parsed.settings,
+            selectedTopic: parsed.settings?.selectedTopic ?? '',
             questionTimeLimitSeconds: parsed.settings?.questionTimeLimitSeconds ?? 30,
             enableQuestionTimer: parsed.settings?.enableQuestionTimer ?? true,
           };
@@ -52,7 +54,7 @@ export function getInitialGameState(): GameState {
 
   const teams: Team[] = INITIAL_TEAMS;
   const questions: Question[] = DEFAULT_QUESTIONS;
-  const teamCardDecks = generateTeamCardDecks(teams, questions, 10, true);
+  const teamCardDecks = generateTeamCardDecks(teams, questions);
 
   return {
     settings: DEFAULT_SETTINGS,

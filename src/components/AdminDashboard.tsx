@@ -43,6 +43,9 @@ import {
   FileText,
   Check,
   Loader2,
+  ArrowUp,
+  ArrowDown,
+  LogOut,
 } from 'lucide-react';
 import {
   GameState,
@@ -56,11 +59,20 @@ import {
   MultiPartConfig,
   MultiPartItem,
 } from '../types';
-import { COLOR_MAP, DEFAULT_QUESTIONS, generateTeamCardDecks, validateDecksAndQuestions } from '../utils/presets';
+import {
+  COLOR_MAP,
+  DEFAULT_QUESTIONS,
+  generateTeamCardDecks,
+  validateDecksAndQuestions,
+  getUniqueQuestionCategories,
+  filterQuestionsByCategory,
+} from '../utils/presets';
 import { sound } from '../utils/sound';
 
 interface AdminDashboardProps {
   gameState: GameState;
+  masterQuestions?: Question[];
+  onSelectTopic?: (topic: string) => void;
   onUpdateSettings: (newSettings: GameSettings) => void;
   onUpdateTeams: (newTeams: Team[]) => void;
   onUpdateQuestions: (newQuestions: Question[]) => void;
@@ -75,13 +87,18 @@ interface AdminDashboardProps {
   onOverrideTeamScore: (teamId: string, delta: number) => void;
   onLoadDemoData?: () => void;
   onResetMatch?: () => void;
+  onToggleOrderLock?: (locked: boolean) => Promise<{ success: boolean; error?: string } | void>;
   onOpenArena?: () => void;
   onOpenPrint?: () => void;
   onOpenScoreboard?: () => void;
+  onOpenGate?: () => void;
+  onLogoutAdmin?: () => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   gameState,
+  masterQuestions,
+  onSelectTopic,
   onUpdateSettings,
   onUpdateTeams,
   onUpdateQuestions,
@@ -96,9 +113,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onOverrideTeamScore,
   onLoadDemoData,
   onResetMatch,
+  onToggleOrderLock,
   onOpenArena,
   onOpenPrint,
   onOpenScoreboard,
+  onOpenGate,
+  onLogoutAdmin,
 }) => {
   const { settings, teams, questions, status: gameStatus, activeTeamId, activityLogs } = gameState;
 
@@ -129,6 +149,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [questionSearch, setQuestionSearch] = useState('');
   const [isSavingQuestion, setIsSavingQuestion] = useState(false);
   const [isRefreshingCloud, setIsRefreshingCloud] = useState(false);
+
+  // Question Order Lock State
+  const [showFinalizeModal, setShowFinalizeModal] = useState(false);
+  const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const [isLockingOrder, setIsLockingOrder] = useState(false);
+  const isOrderLocked = Boolean(gameState.orderLocked);
   const [questionForm, setQuestionForm] = useState<{
     code: string;
     type: QuestionType;
@@ -218,6 +244,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const deckValidation = useMemo(() => {
     return validateDecksAndQuestions(teams, questions, gameState.teamCardDecks || {});
   }, [teams, questions, gameState.teamCardDecks]);
+
+  // Master Pool for Topic Selection (Full master bank if provided, otherwise active questions)
+  const masterPool = useMemo(() => {
+    return masterQuestions && masterQuestions.length > 0 ? masterQuestions : questions;
+  }, [masterQuestions, questions]);
+
+  // Available topics derived from Master Pool
+  const availableTopics = useMemo(() => {
+    return getUniqueQuestionCategories(masterPool);
+  }, [masterPool]);
+
+  // Handler for topic selection change
+  const handleTopicChange = (topic: string) => {
+    if (isOrderLocked) {
+      showToast('Urutan kartu sudah dikunci. Buka kunci urutan sebelum mengganti topik playlist.', 'error');
+      return;
+    }
+    setMatchForm((prev) => ({ ...prev, selectedTopic: topic }));
+    if (onSelectTopic) {
+      onSelectTopic(topic);
+    } else {
+      onUpdateSettings({ ...matchForm, selectedTopic: topic });
+    }
+    sound.playClick();
+    showToast(topic ? `Playlist topik diubah ke: "${topic}" 📚` : 'Menampilkan semua topik soal (Semua Topik) 📚');
+  };
 
   // Feedback Notification Banner
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -359,6 +411,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // QUESTION MANAGEMENT ACTIONS
   // -------------------------------------------------------------
   const openNewQuestionModal = () => {
+    if (isOrderLocked) {
+      showToast('Urutan kartu sudah dikunci. Buka kunci urutan terlebih dahulu jika ingin menambah soal baru.', 'error');
+      return;
+    }
     setEditingQuestionId(null);
     setQuestionError(null);
     const nextNumber = String(questions.length + 1).padStart(2, '0');
@@ -626,6 +682,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleDeleteQuestion = async (id: string) => {
+    if (isOrderLocked) {
+      showToast('Urutan kartu sudah dikunci. Buka kunci urutan terlebih dahulu jika ingin menghapus soal.', 'error');
+      return;
+    }
     if (questions.length <= 1) {
       showToast('Minimal harus ada 1 soal dalam bank soal.', 'error');
       return;
@@ -644,6 +704,86 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
       sound.playClick();
       showToast('Soal berhasil dihapus.');
+    }
+  };
+
+  const handleMoveQuestion = (index: number, direction: 'up' | 'down') => {
+    if (isOrderLocked) {
+      showToast('Urutan kartu sudah dikunci. Urutan soal tidak dapat diubah.', 'error');
+      return;
+    }
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= questions.length) return;
+    const newQuestions = [...questions];
+    const [moved] = newQuestions.splice(index, 1);
+    newQuestions.splice(targetIndex, 0, moved);
+    onUpdateQuestions(newQuestions);
+    sound.playClick();
+    showToast(`Urutan soal berhasil dipindahkan ke posisi #${targetIndex + 1}. 💾`);
+  };
+
+  // -------------------------------------------------------------
+  // ORDER LOCK & FINALIZATION ACTIONS
+  // -------------------------------------------------------------
+  const validateOrderBeforeLock = (): { valid: boolean; error?: string } => {
+    if (!questions || questions.length === 0) {
+      return { valid: false, error: 'Tidak ada soal dalam bank soal untuk difinalisasi.' };
+    }
+    const idSet = new Set<string>();
+    for (const q of questions) {
+      if (!q.id) return { valid: false, error: 'Terdapat soal dengan ID tidak valid/kosong.' };
+      if (idSet.has(q.id)) return { valid: false, error: `Terdapat ID soal duplikat: ${q.id}` };
+      idSet.add(q.id);
+      if (!q.questionText || !q.questionText.trim()) {
+        return { valid: false, error: `Soal #${q.code || 'Tanpa Kode'} belum memiliki teks pertanyaan.` };
+      }
+    }
+    return { valid: true };
+  };
+
+  const handleConfirmFinalizeLock = async () => {
+    const validation = validateOrderBeforeLock();
+    if (!validation.valid) {
+      showToast(validation.error || 'Validasi urutan soal gagal.', 'error');
+      return;
+    }
+
+    setIsLockingOrder(true);
+    try {
+      if (onToggleOrderLock) {
+        const res = await onToggleOrderLock(true);
+        if (res && typeof res === 'object' && 'success' in res && !res.success) {
+          showToast(res.error || 'Gagal menyimpan status kunci urutan ke database.', 'error');
+          return;
+        }
+      }
+      setShowFinalizeModal(false);
+      sound.playClick();
+      showToast('🔒 Urutan soal resmi berhasil difinalisasi & dikunci! Kartu siap dicetak.');
+    } catch (err: any) {
+      showToast(err?.message || 'Terjadi kesalahan saat memfinalisasi urutan.', 'error');
+    } finally {
+      setIsLockingOrder(false);
+    }
+  };
+
+  const handleConfirmUnlock = async () => {
+    setIsLockingOrder(true);
+    try {
+      if (onToggleOrderLock) {
+        const res = await onToggleOrderLock(false);
+        if (res && typeof res === 'object' && 'success' in res && !res.success) {
+          showToast(res.error || 'Gagal membuka kunci urutan di database.', 'error');
+          return;
+        }
+      }
+      setShowUnlockModal(false);
+      sound.playClick();
+      showToast('🔓 Kunci urutan soal telah dibuka. Anda dapat mengatur ulang urutan soal.');
+    } catch (err: any) {
+      showToast(err?.message || 'Terjadi kesalahan saat membuka kunci.', 'error');
+    } finally {
+      setIsLockingOrder(false);
     }
   };
 
@@ -924,16 +1064,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             NAVIGASI KONTROL
           </div>
 
-          {/* Menu Items */}
+          {/* Overview Item */}
+          <button
+            id="sidebar-item-dashboard"
+            type="button"
+            onClick={() => {
+              sound.playClick();
+              setActiveTab('dashboard');
+            }}
+            className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
+              activeTab === 'dashboard'
+                ? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-cyan-300 border border-cyan-400/40 shadow-[0_0_15px_rgba(6,182,212,0.2)]'
+                : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <LayoutDashboard className={`w-4 h-4 ${activeTab === 'dashboard' ? 'text-cyan-400' : 'text-slate-400'}`} />
+              <span>Dashboard Ringkasan</span>
+            </div>
+          </button>
+
+          {/* PILAR 1: SOAL */}
+          <div className="px-3 pt-3 pb-1 text-[10px] font-black text-cyan-400 uppercase tracking-widest border-t border-white/5 flex items-center gap-1.5 mt-1">
+            <HelpCircle className="w-3.5 h-3.5" />
+            <span>1. PILAR SOAL</span>
+          </div>
+
           {[
-            { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-            { id: 'settings', label: 'Pengaturan Pertandingan', icon: Settings },
-            { id: 'teams', label: 'Kelompok Peserta', icon: Users, badge: teams.length },
-            { id: 'questions', label: 'Bank Soal', icon: HelpCircle, badge: questions.length },
-            { id: 'decks', label: 'Kartu Soal & Deck', icon: Layers },
-            { id: 'live', label: 'Monitoring Langsung', icon: Activity },
-            { id: 'results', label: 'Hasil Pertandingan', icon: Trophy },
-            { id: 'history', label: 'Riwayat Log', icon: History },
+            { id: 'questions', label: 'Bank Soal Master', icon: HelpCircle, badge: questions.length },
+            { id: 'decks', label: 'Urutan Kartu & Deck', icon: Layers },
           ].map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -946,7 +1105,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   sound.playClick();
                   setActiveTab(item.id as typeof activeTab);
                 }}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
+                className={`w-full flex items-center justify-between px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
                   isActive
                     ? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-cyan-300 border border-cyan-400/40 shadow-[0_0_15px_rgba(6,182,212,0.2)]'
                     : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
@@ -965,6 +1124,86 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     {item.badge}
                   </span>
                 )}
+              </button>
+            );
+          })}
+
+          {/* PILAR 2: MATCH */}
+          <div className="px-3 pt-3 pb-1 text-[10px] font-black text-amber-400 uppercase tracking-widest border-t border-white/5 flex items-center gap-1.5 mt-1">
+            <Activity className="w-3.5 h-3.5" />
+            <span>2. PILAR MATCH</span>
+          </div>
+
+          {[
+            { id: 'live', label: 'Monitoring Live & Buzzer', icon: Activity },
+            { id: 'teams', label: 'Kelompok Peserta', icon: Users, badge: teams.length },
+            { id: 'results', label: 'Hasil Pertandingan', icon: Trophy },
+            { id: 'history', label: 'Riwayat Log', icon: History },
+          ].map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                id={`sidebar-item-${item.id}`}
+                type="button"
+                onClick={() => {
+                  sound.playClick();
+                  setActiveTab(item.id as typeof activeTab);
+                }}
+                className={`w-full flex items-center justify-between px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-gradient-to-r from-amber-500/20 to-orange-500/20 text-amber-300 border border-amber-400/40 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
+                  <span>{item.label}</span>
+                </div>
+                {item.badge !== undefined && (
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      isActive ? 'bg-amber-400 text-slate-950' : 'bg-white/10 text-slate-300'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+
+          {/* PILAR 3: SETTING */}
+          <div className="px-3 pt-3 pb-1 text-[10px] font-black text-indigo-400 uppercase tracking-widest border-t border-white/5 flex items-center gap-1.5 mt-1">
+            <Settings className="w-3.5 h-3.5" />
+            <span>3. PILAR SETTING</span>
+          </div>
+
+          {[
+            { id: 'settings', label: 'Pengaturan Pertandingan', icon: Settings },
+          ].map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                id={`sidebar-item-${item.id}`}
+                type="button"
+                onClick={() => {
+                  sound.playClick();
+                  setActiveTab(item.id as typeof activeTab);
+                }}
+                className={`w-full flex items-center justify-between px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-gradient-to-r from-indigo-500/20 to-cyan-500/20 text-indigo-300 border border-indigo-400/40 shadow-[0_0_15px_rgba(79,70,229,0.2)]'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-indigo-400' : 'text-slate-400'}`} />
+                  <span>{item.label}</span>
+                </div>
               </button>
             );
           })}
@@ -1003,6 +1242,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
 
             <button
+              id="btn-sidebar-gate"
+              type="button"
+              onClick={() => {
+                sound.playClick();
+                if (onOpenGate) onOpenGate();
+              }}
+              className="w-full flex items-center justify-between px-4 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-bold transition-all cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5">
+                <Users className="w-4 h-4 text-slate-400" />
+                <span>Gerbang Peserta</span>
+              </div>
+              <ChevronRight className="w-4 h-4 opacity-70" />
+            </button>
+
+            <button
               id="btn-sidebar-print"
               type="button"
               onClick={() => {
@@ -1019,23 +1274,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           </div>
 
-          {/* Bottom Sidebar Status */}
-          <div className="mt-6 pt-4 border-t border-white/10 px-3 flex items-center justify-between text-[11px] text-slate-400">
-            <div>
-              <p className="font-bold text-white">ADMIN / GURU</p>
-              <p className="text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Sistem Online
-              </p>
+          {/* Bottom Sidebar Status & Logout */}
+          <div className="mt-4 pt-3 border-t border-white/10 px-2 space-y-2">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
+              <div>
+                <p className="font-bold text-white">AKUN GURU / ADMIN</p>
+                <p className="text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Sesi Terverifikasi
+                </p>
+              </div>
+              <button
+                id="btn-sidebar-reset"
+                type="button"
+                onClick={() => setShowResetConfirm(true)}
+                className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-[10px] font-bold transition-all cursor-pointer"
+                title="Reset Skor & Pertandingan"
+              >
+                Reset Match
+              </button>
             </div>
-            <button
-              id="btn-sidebar-reset"
-              type="button"
-              onClick={() => setShowResetConfirm(true)}
-              className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-[10px] font-bold transition-all cursor-pointer"
-              title="Reset Skor & Pertandingan"
-            >
-              Reset Match
-            </button>
+
+            {onLogoutAdmin && (
+              <button
+                id="btn-sidebar-logout-admin"
+                type="button"
+                onClick={() => {
+                  sound.playClick();
+                  onLogoutAdmin();
+                }}
+                className="w-full py-2 rounded-xl bg-white/5 hover:bg-rose-500/20 border border-white/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-300 text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Keluar dari Akun Guru</span>
+              </button>
+            )}
           </div>
         </aside>
 
@@ -1227,6 +1499,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       className="w-full bg-slate-950/70 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none transition-all"
                     />
                     <p className="text-[11px] text-slate-400">Poin default jika soal tidak diatur poin khusus</p>
+                  </div>
+
+                  {/* Pilihan Topik / Playlist Soal */}
+                  <div className="space-y-2 sm:col-span-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Playlist Topik Soal (Topic Selector)</span>
+                      </label>
+                      <span className="text-[10px] text-cyan-400 font-mono font-bold">
+                        {matchForm.selectedTopic ? `Topik Aktif: "${matchForm.selectedTopic}"` : 'Semua Topik (Snapshot Master)'}
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <select
+                        id="select-match-topic-dashboard"
+                        value={matchForm.selectedTopic || ''}
+                        disabled={isOrderLocked}
+                        onChange={(e) => handleTopicChange(e.target.value)}
+                        className={`w-full bg-slate-950/70 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none transition-all cursor-pointer appearance-none ${
+                          isOrderLocked ? 'opacity-60 cursor-not-allowed bg-slate-900/50' : ''
+                        }`}
+                      >
+                        <option value="" className="bg-slate-900 text-white">
+                          Semua Topik ({masterPool.length} Soal Master)
+                        </option>
+                        {availableTopics.map((topic) => {
+                          const count = masterPool.filter((q) => q.category === topic).length;
+                          return (
+                            <option key={topic} value={topic} className="bg-slate-900 text-white">
+                              Topik: {topic} ({count} Soal)
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
+                        ▼
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>
+                        {isOrderLocked
+                          ? '🔒 Urutan terkunci: Topik playlist tidak dapat diubah selama pertandingan aktif.'
+                          : 'Pilih topik tertentu untuk memfilter snapshot soal pertandingan dan menata ulang urutan kartu secara otomatis.'}
+                      </span>
+                      <span className="text-cyan-400 font-mono font-bold text-[10px] ml-2 shrink-0">
+                        {questions.length} Soal di Match
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1439,22 +1760,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <HelpCircle className="w-5 h-5" />
                     </div>
                     <div>
-                      <h3 className="text-base sm:text-lg font-bold text-white uppercase tracking-wider">
-                        BANK SOAL
-                      </h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base sm:text-lg font-bold text-white uppercase tracking-wider">
+                          BANK SOAL
+                        </h3>
+                        {isOrderLocked ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center gap-1">
+                            <Lock className="w-3 h-3 text-amber-400" />
+                            URUTAN TERKUNCI
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            Urutan Terbuka
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-400">
-                        Jumlah Soal: <span className="text-cyan-400 font-bold">{questions.length}</span> soal aktif
+                        Jumlah Soal: <span className="text-cyan-400 font-bold">{questions.length}</span> soal aktif • Urutan Single Source of Truth
                       </p>
                     </div>
                   </div>
 
                   {/* Question Actions */}
                   <div className="flex flex-wrap items-center gap-2.5">
+                    {isOrderLocked ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowUnlockModal(true)}
+                        className="px-3.5 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-400/30 text-amber-300 hover:text-amber-200 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                        title="Buka Kunci Urutan untuk Mengubah Urutan"
+                      >
+                        <Unlock className="w-3.5 h-3.5" />
+                        BUKA KUNCI URUTAN
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowFinalizeModal(true)}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-black text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-lg shadow-amber-500/20 transition-all active:scale-95"
+                        title="Finalisasi dan Kunci Urutan Soal Sebelum Cetak Kartu"
+                      >
+                        <Lock className="w-4 h-4" />
+                        FINALISASI & KUNCI
+                      </button>
+                    )}
+
                     <button
                       id="btn-open-add-question-modal"
                       type="button"
+                      disabled={isOrderLocked}
                       onClick={openNewQuestionModal}
-                      className="px-4 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-200 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
+                      className="px-4 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-200 text-xs font-bold transition-all flex items-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      title={isOrderLocked ? 'Urutan terkunci. Tidak dapat menambah soal baru.' : '+ Tambah Soal'}
                     >
                       <Plus className="w-4 h-4" />
                       + TAMBAH SOAL
@@ -1600,9 +1958,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   </button>
                                   <button
                                     type="button"
+                                    disabled={isOrderLocked}
                                     onClick={() => handleDeleteQuestion(q.id)}
-                                    className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
-                                    title="Hapus Soal"
+                                    className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                                    title={isOrderLocked ? 'Urutan terkunci. Tidak dapat menghapus soal.' : 'Hapus Soal'}
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -1841,6 +2200,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   />
                   <p className="text-[11px] text-slate-400">Poin default jika soal tidak memiliki poin khusus</p>
                 </div>
+
+                {/* Pilihan Topik / Playlist Soal */}
+                <div className="space-y-2 sm:col-span-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Playlist Topik Soal Pertandingan</span>
+                    </label>
+                    <span className="text-[10px] text-cyan-400 font-mono font-bold">
+                      {matchForm.selectedTopic ? `Topik: "${matchForm.selectedTopic}"` : 'Semua Topik (Master Bank)'}
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <select
+                      id="select-match-topic-settings"
+                      value={matchForm.selectedTopic || ''}
+                      disabled={isOrderLocked}
+                      onChange={(e) => handleTopicChange(e.target.value)}
+                      className={`w-full bg-slate-950/70 border border-white/15 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20 rounded-2xl px-4 py-3 text-sm font-semibold text-white outline-none transition-all cursor-pointer appearance-none ${
+                        isOrderLocked ? 'opacity-60 cursor-not-allowed bg-slate-900/50' : ''
+                      }`}
+                    >
+                      <option value="" className="bg-slate-900 text-white">
+                        Semua Topik ({masterPool.length} Soal Master)
+                      </option>
+                      {availableTopics.map((topic) => {
+                        const count = masterPool.filter((q) => q.category === topic).length;
+                        return (
+                          <option key={topic} value={topic} className="bg-slate-900 text-white">
+                            Topik: {topic} ({count} Soal)
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs font-bold">
+                      ▼
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>
+                      {isOrderLocked
+                        ? '🔒 Urutan kartu terkunci. Buka kunci untuk mengganti topik.'
+                        : 'Memilih topik akan membuat snapshot soal pertandingan dan otomatis mengurutkan kartu berdasarkan nomor soal terkecil.'}
+                    </span>
+                    <span className="text-cyan-400 font-mono font-bold text-[10px] ml-2 shrink-0">
+                      {questions.length} Soal Aktif
+                    </span>
+                  </div>
+                </div>
               </div>
 
               {/* Toggles */}
@@ -1987,14 +2395,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">
                       BANK SOAL ({questions.length})
                     </h2>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" /> Supabase Synced
+                    {isOrderLocked ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center gap-1">
+                        <Lock className="w-3 h-3 text-amber-400" />
+                        URUTAN KARTU TERKUNCI (RESMI)
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Urutan Dapat Diubah
+                      </span>
+                    )}
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/10 border border-cyan-400/20 text-cyan-300 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-cyan-400" /> Supabase Synced
                     </span>
                   </div>
-                  <p className="text-xs text-slate-400">Daftar lengkap soal dan kunci jawaban yang tersimpan permanen</p>
+                  <p className="text-xs text-slate-400">
+                    {isOrderLocked
+                      ? 'Urutan soal telah difinalisasi dan terkunci untuk pertandingan. Kartu fisik siap dicetak.'
+                      : 'Daftar lengkap soal dan kunci jawaban. Anda dapat mengatur urutan sebelum mencetak kartu.'}
+                  </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {isOrderLocked ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowUnlockModal(true)}
+                      className="px-3.5 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-400/30 text-amber-300 hover:text-amber-200 font-bold text-xs uppercase flex items-center gap-1.5 cursor-pointer transition-all"
+                      title="Buka Kunci Urutan untuk Mengatur Ulang"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>Buka Kunci Urutan</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowFinalizeModal(true)}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-black text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-lg shadow-amber-500/20 transition-all active:scale-95"
+                      title="Finalisasi dan Kunci Urutan Soal Sebelum Cetak Kartu"
+                    >
+                      <Lock className="w-4 h-4" />
+                      <span>Finalisasi & Kunci Urutan</span>
+                    </button>
+                  )}
+
                   {onRefreshFromCloud && (
                     <button
                       type="button"
@@ -2018,20 +2463,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   )}
 
                   <div className="relative">
+                    <select
+                      id="select-match-topic-questions-tab"
+                      value={matchForm.selectedTopic || ''}
+                      disabled={isOrderLocked}
+                      onChange={(e) => handleTopicChange(e.target.value)}
+                      className={`bg-slate-950/70 border border-white/15 rounded-xl pl-3 pr-7 py-1.5 text-xs text-white outline-none cursor-pointer appearance-none ${
+                        isOrderLocked ? 'opacity-50 cursor-not-allowed' : 'hover:border-cyan-400 focus:border-cyan-400'
+                      }`}
+                      title={isOrderLocked ? 'Urutan terkunci. Topik tidak dapat diubah.' : 'Pilih Topik Soal'}
+                    >
+                      <option value="" className="bg-slate-900 text-white">
+                        Semua Topik ({masterPool.length} Soal Master)
+                      </option>
+                      {availableTopics.map((topic) => {
+                        const count = masterPool.filter((q) => q.category === topic).length;
+                        return (
+                          <option key={topic} value={topic} className="bg-slate-900 text-white">
+                            Topik: {topic} ({count} Soal)
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-[10px] font-bold">
+                      ▼
+                    </span>
+                  </div>
+
+                  <div className="relative">
                     <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       value={questionSearch}
                       onChange={(e) => setQuestionSearch(e.target.value)}
                       placeholder="Cari soal atau kunci..."
-                      className="bg-slate-950/70 border border-white/15 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white outline-none w-48"
+                      className="bg-slate-950/70 border border-white/15 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white outline-none w-44"
                     />
                   </div>
 
                   <button
                     type="button"
+                    disabled={isOrderLocked}
                     onClick={openNewQuestionModal}
-                    className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase flex items-center gap-1.5 cursor-pointer shadow-lg shadow-cyan-500/20"
+                    className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-lg shadow-cyan-500/20"
+                    title={isOrderLocked ? 'Urutan terkunci. Tidak dapat menambah soal baru.' : '+ Tambah Soal'}
                   >
                     <Plus className="w-4 h-4" />
                     + Tambah Soal
@@ -2044,7 +2519,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-950/80 border-b border-white/10 text-slate-400 font-bold uppercase tracking-wider">
                     <tr>
-                      <th className="p-3 w-12 text-center">No</th>
+                      <th className="p-3 w-14 text-center">No</th>
                       <th className="p-3 w-32">Jenis Soal</th>
                       <th className="p-3">Pertanyaan & Pengantar</th>
                       <th className="p-3">Kunci Jawaban</th>
@@ -2075,8 +2550,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                       return (
                         <tr key={q.id} className="hover:bg-white/5 transition-colors">
-                          <td className="p-3 text-center font-bold text-cyan-400">
-                            {String(idx + 1).padStart(2, '0')}
+                          <td className="p-3 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              <div className="flex flex-col gap-0.5">
+                                <button
+                                  type="button"
+                                  disabled={isOrderLocked || idx === 0}
+                                  onClick={() => {
+                                    const originalIdx = questions.findIndex((item) => item.id === q.id);
+                                    if (originalIdx > 0) handleMoveQuestion(originalIdx, 'up');
+                                  }}
+                                  className="p-1 rounded bg-white/5 hover:bg-cyan-500/20 text-slate-400 hover:text-cyan-300 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                                  title={isOrderLocked ? 'Urutan terkunci setelah finalisasi.' : 'Geser Soal ke Atas (Ubah Urutan)'}
+                                >
+                                  <ArrowUp className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isOrderLocked || idx === filteredQuestions.length - 1}
+                                  onClick={() => {
+                                    const originalIdx = questions.findIndex((item) => item.id === q.id);
+                                    if (originalIdx >= 0 && originalIdx < questions.length - 1) handleMoveQuestion(originalIdx, 'down');
+                                  }}
+                                  className="p-1 rounded bg-white/5 hover:bg-cyan-500/20 text-slate-400 hover:text-cyan-300 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                                  title={isOrderLocked ? 'Urutan terkunci setelah finalisasi.' : 'Geser Soal ke Bawah (Ubah Urutan)'}
+                                >
+                                  <ArrowDown className="w-3 h-3" />
+                                </button>
+                              </div>
+                              <span className="font-bold text-cyan-400 font-mono text-sm ml-1">
+                                {String(idx + 1).padStart(2, '0')}
+                              </span>
+                            </div>
                           </td>
                           <td className="p-3">
                             <span
@@ -2137,9 +2642,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </button>
                               <button
                                 type="button"
+                                disabled={isOrderLocked}
                                 onClick={() => handleDeleteQuestion(q.id)}
-                                className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
-                                title="Hapus Soal"
+                                className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                                title={isOrderLocked ? 'Urutan terkunci. Tidak dapat menghapus soal.' : 'Hapus Soal'}
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -2266,18 +2772,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         sound.playWrong();
                         return;
                       }
+                      if (isOrderLocked) {
+                        showToast('Urutan kartu sudah dikunci resmi. Buka kunci urutan terlebih dahulu jika ingin mengacak ulang.', 'error');
+                        sound.playWrong();
+                        return;
+                      }
                       sound.playClick();
                       setShowRegenerateConfirm(true);
                     }}
-                    disabled={isMatchStarted}
+                    disabled={isMatchStarted || isOrderLocked}
                     className={`px-4 py-2.5 rounded-xl font-bold text-xs uppercase flex items-center gap-2 transition-all ${
-                      isMatchStarted
+                      isMatchStarted || isOrderLocked
                         ? 'bg-white/5 text-slate-500 border border-white/10 cursor-not-allowed'
                         : 'bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-400/40 cursor-pointer active:scale-95'
                     }`}
                   >
                     <RefreshCw className="w-4 h-4" />
-                    {isMatchStarted ? 'Urutan Terkunci' : 'Generate Ulang Urutan'}
+                    {isMatchStarted ? 'Pertandingan Berlangsung' : isOrderLocked ? 'Urutan Terkunci' : 'Generate Ulang Urutan'}
                   </button>
 
                   {/* Cetak Button */}
@@ -3104,11 +3615,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <label className="block text-xs font-bold text-slate-300 uppercase">Kategori / Topik</label>
                   <input
                     type="text"
+                    list="category-topic-options"
                     value={questionForm.category}
                     onChange={(e) => setQuestionForm({ ...questionForm, category: e.target.value })}
                     placeholder="Contoh: Pengukuran Panjang"
                     className="w-full bg-slate-950 border border-white/15 rounded-xl px-3.5 py-2 text-sm text-white outline-none"
                   />
+                  <datalist id="category-topic-options">
+                    {availableTopics.map((top) => (
+                      <option key={top} value={top} />
+                    ))}
+                  </datalist>
                 </div>
 
                 <div className="space-y-1.5">
@@ -3464,6 +3981,140 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
               >
                 Ya, Acak Ulang
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 10. MODAL KONFIRMASI FINALISASI & KUNCI URUTAN SOAL */}
+      {/* ========================================================= */}
+      {showFinalizeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 mx-auto shadow-[0_0_20px_rgba(245,158,11,0.2)]">
+              <Lock className="w-7 h-7" />
+            </div>
+
+            <div className="text-center">
+              <h3 className="text-xl font-bold text-white uppercase tracking-wider">
+                Finalisasi & Kunci Urutan Kartu Soal?
+              </h3>
+              <div className="flex items-center justify-center gap-2 mt-1">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
+                  Topik: {matchForm.selectedTopic ? `"${matchForm.selectedTopic}"` : 'Semua Topik'}
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                  {questions.length} Soal Snapshot
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                Tindakan ini akan mengunci urutan <strong className="text-cyan-300 font-bold">{questions.length} soal</strong> sebagai <strong className="text-amber-300 font-bold">Single Source of Truth</strong>.
+              </p>
+            </div>
+
+            {/* Verification checklist before lock */}
+            <div className="p-4 rounded-2xl bg-slate-950/70 border border-white/10 space-y-2.5 text-xs text-slate-300">
+              <p className="font-bold text-amber-300 uppercase text-[11px] tracking-wider flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Konfirmasi Urutan Resmi:
+              </p>
+              <ul className="space-y-1.5 text-[11px] text-slate-400 pl-1">
+                <li className="flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold">✓</span>
+                  Urutan di Bank Soal (<strong className="text-white">1 s/d {questions.length}</strong>) akan identik dengan Kartu Cetak & Game Arena.
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold">✓</span>
+                  Tombol geser posisi naik/turun dan hapus soal akan dinonaktifkan untuk mencegah perubahan tidak disengaja.
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="text-cyan-400 font-bold">ℹ</span>
+                  Anda tetap dapat mengedit teks soal/kunci jawaban, atau membuka kunci kembali jika diperlukan.
+                </li>
+              </ul>
+            </div>
+
+            {/* Quick Preview of First 3 & Last 1 Questions */}
+            {questions.length > 0 && (
+              <div className="bg-slate-950/40 rounded-xl p-2.5 border border-white/5 text-[11px]">
+                <span className="text-slate-500 font-mono block mb-1">Preview Urutan Kartu Resmi:</span>
+                <div className="space-y-1 font-mono text-slate-300">
+                  {questions.slice(0, 3).map((q, idx) => (
+                    <div key={q.id} className="flex items-center gap-2 truncate">
+                      <span className="text-cyan-400 font-bold w-6">#{idx + 1}</span>
+                      <span className="text-slate-200 truncate">{q.code ? `[${q.code}]` : ''} {q.questionText}</span>
+                    </div>
+                  ))}
+                  {questions.length > 3 && (
+                    <div className="text-slate-500 pl-8">... dan {questions.length - 3} soal lainnya hingga #{questions.length}</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isLockingOrder}
+                onClick={() => setShowFinalizeModal(false)}
+                className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 font-bold text-xs cursor-pointer transition-all disabled:opacity-50"
+              >
+                Batal / Periksa Lagi
+              </button>
+              <button
+                type="button"
+                disabled={isLockingOrder}
+                onClick={handleConfirmFinalizeLock}
+                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.3)] cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+              >
+                <Lock className="w-4 h-4" />
+                {isLockingOrder ? 'Mengunci...' : 'Ya, Kunci Urutan Resmi'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 11. MODAL KONFIRMASI BUKA KUNCI URUTAN SOAL */}
+      {/* ========================================================= */}
+      {showUnlockModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-cyan-400/40 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 mx-auto">
+              <Unlock className="w-7 h-7" />
+            </div>
+
+            <div className="text-center">
+              <h3 className="text-lg font-bold text-white uppercase tracking-wider">
+                Buka Kunci Urutan Soal?
+              </h3>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                Setelah dibuka kunci, Anda dapat menambah, menghapus, atau memindahkan urutan soal kembali.
+              </p>
+              <div className="mt-3 p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/30 text-amber-200 text-[11px] text-left">
+                ⚠️ <strong>Perhatian:</strong> Jika Anda mengubah urutan setelah kartu fisik dicetak, pastikan untuk mencetak ulang kartu agar nomor kartu tetap sama dengan arena game.
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isLockingOrder}
+                onClick={() => setShowUnlockModal(false)}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 font-bold text-xs cursor-pointer transition-all disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isLockingOrder}
+                onClick={handleConfirmUnlock}
+                className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+              >
+                <Unlock className="w-4 h-4" />
+                {isLockingOrder ? 'Membuka...' : 'Buka Kunci Urutan'}
               </button>
             </div>
           </div>

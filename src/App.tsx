@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GameState, Team, Question, GameSettings } from './types';
 import { getInitialGameState, saveGameState, DEFAULT_SETTINGS, getStoredRoomId, setStoredRoomId } from './utils/storage';
-import { generateTeamCardDecks, createDemoState, DEMO_QUESTIONS, INITIAL_TEAMS } from './utils/presets';
+import {
+  generateTeamCardDecks,
+  createDemoState,
+  DEMO_QUESTIONS,
+  INITIAL_TEAMS,
+  filterQuestionsByCategory,
+  getUniqueQuestionCategories,
+} from './utils/presets';
 import { sound } from './utils/sound';
 import { checkAnswer } from './utils/answerChecker';
 import { HeaderNav } from './components/HeaderNav';
@@ -10,7 +17,10 @@ import { ScoreboardView } from './components/ScoreboardView';
 import { AdminDashboard } from './components/AdminDashboard';
 import { PrintableCards } from './components/PrintableCards';
 import { GameOverModal } from './components/GameOverModal';
-import { RefreshCw } from 'lucide-react';
+import { AccessGate } from './components/AccessGate';
+import { AdminLoginModal } from './components/AdminLoginModal';
+import { isAdminAuthenticated, logoutAdmin } from './utils/auth';
+import { RefreshCw, Check, Copy, Share2 } from 'lucide-react';
 import {
   loadCompetitionFromDb,
   saveCompetitionToDb,
@@ -22,10 +32,23 @@ import {
   updateDbTeamScore,
   insertDbActivityLog,
   subscribeToRoomRealtime,
+  setCompetitionOrderLockedInDb,
 } from './services/dbService';
 
 export default function App() {
-  const [currentRoomId, setCurrentRoomId] = useState<string>(() => getStoredRoomId());
+  const [currentRoomId, setCurrentRoomId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get('room');
+      if (roomParam) {
+        const formatted = roomParam.trim().toUpperCase();
+        setStoredRoomId(formatted);
+        return formatted;
+      }
+    }
+    return getStoredRoomId();
+  });
+
   const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
   const [gameState, setGameState] = useState<GameState>(() => {
     const initial = getInitialGameState();
@@ -33,15 +56,31 @@ export default function App() {
     return initial;
   });
 
-  const [activeTab, setActiveTab] = useState<'arena' | 'scoreboard' | 'admin' | 'print'>(() => {
+  // Master Question Bank (Full pool of questions across all categories)
+  const [masterQuestions, setMasterQuestions] = useState<Question[]>(() => DEMO_QUESTIONS);
+
+  // Authentication State for Guru / Admin
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => isAdminAuthenticated());
+  const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
+  const [shareToastMessage, setShareToastMessage] = useState<string | null>(null);
+
+  const [activeTab, setActiveTab] = useState<'gate' | 'arena' | 'scoreboard' | 'admin' | 'print'>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const tabParam = params.get('tab');
-      if (tabParam === 'arena' || tabParam === 'scoreboard' || tabParam === 'admin' || tabParam === 'print') {
+      if (tabParam === 'gate' || tabParam === 'arena' || tabParam === 'scoreboard' || tabParam === 'admin' || tabParam === 'print') {
+        if (tabParam === 'admin' && !isAdminAuthenticated()) {
+          return 'gate';
+        }
         return tabParam;
       }
+      // If a team is provided in URL, go straight to arena
+      if (params.get('team')) {
+        return 'arena';
+      }
     }
-    return 'admin';
+    // Default to Access Gate so participants or general visitors see the public landing gate
+    return 'gate';
   });
 
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -96,7 +135,7 @@ export default function App() {
           // Ensure decks are generated if empty
           let finalDecks = cloudState.teamCardDecks;
           if (!finalDecks || Object.keys(finalDecks).length === 0) {
-            finalDecks = generateTeamCardDecks(finalTeams, finalQuestions, finalQuestions.length, true);
+            finalDecks = generateTeamCardDecks(finalTeams, finalQuestions);
           }
 
           return {
@@ -604,13 +643,53 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // ADMIN UPDATE HANDLERS (With Supabase Sync)
+  // ADMIN UPDATE HANDLERS (With Supabase Sync & Topic Selection)
   // -------------------------------------------------------------
+  const handleSelectTopic = (newTopic: string) => {
+    if (gameState.orderLocked) {
+      console.warn('[handleSelectTopic blocked because order is locked]');
+      return;
+    }
+
+    const filteredQuestions = filterQuestionsByCategory(masterQuestions, newTopic);
+    const newDecks = generateTeamCardDecks(gameState.teams, filteredQuestions);
+
+    setGameState((prev) => {
+      const nextState: GameState = {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          selectedTopic: newTopic,
+        },
+        questions: filteredQuestions,
+        teamCardDecks: newDecks,
+      };
+      saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
+      return nextState;
+    });
+  };
+
   const handleUpdateSettings = (newSettings: GameSettings) => {
+    const topicChanged = (newSettings.selectedTopic || '') !== (gameState.settings.selectedTopic || '');
+    if (topicChanged && gameState.orderLocked) {
+      console.warn('[Changing topic blocked because order is locked]');
+      return;
+    }
+
+    let nextQuestions = gameState.questions;
+    let nextDecks = gameState.teamCardDecks;
+
+    if (topicChanged && !gameState.orderLocked) {
+      nextQuestions = filterQuestionsByCategory(masterQuestions, newSettings.selectedTopic);
+      nextDecks = generateTeamCardDecks(gameState.teams, nextQuestions);
+    }
+
     setGameState((prev) => {
       const nextState: GameState = {
         ...prev,
         settings: newSettings,
+        questions: nextQuestions,
+        teamCardDecks: nextDecks,
         timeRemainingSeconds: prev.status === 'ready' ? newSettings.durationMinutes * 60 : prev.timeRemainingSeconds,
       };
       saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
@@ -626,7 +705,7 @@ export default function App() {
         prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
 
       const newDecks = !isMatchStarted
-        ? generateTeamCardDecks(newTeams, prev.questions, prev.questions.length, true)
+        ? generateTeamCardDecks(newTeams, prev.questions)
         : prev.teamCardDecks;
 
       const nextState: GameState = {
@@ -641,6 +720,11 @@ export default function App() {
   };
 
   const handleUpdateQuestions = (newQuestions: Question[]) => {
+    if (gameState.orderLocked) {
+      console.warn('[handleUpdateQuestions blocked because order is locked]');
+      return;
+    }
+
     setGameState((prev) => {
       const isMatchStarted =
         prev.status === 'running' ||
@@ -648,7 +732,7 @@ export default function App() {
         prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
 
       const newDecks = !isMatchStarted
-        ? generateTeamCardDecks(prev.teams, newQuestions, newQuestions.length, true)
+        ? generateTeamCardDecks(prev.teams, newQuestions)
         : prev.teamCardDecks;
 
       const nextState: GameState = {
@@ -666,10 +750,34 @@ export default function App() {
     });
   };
 
+  const handleToggleOrderLock = async (locked: boolean): Promise<{ success: boolean; error?: string }> => {
+    setGameState((prev) => {
+      const nextState: GameState = {
+        ...prev,
+        orderLocked: locked,
+      };
+      saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
+      return nextState;
+    });
+    return setCompetitionOrderLockedInDb(currentRoomId, locked);
+  };
+
   const handleSaveQuestionDirect = async (
     question: Question,
     isEdit: boolean
   ): Promise<{ success: boolean; error?: string }> => {
+    if (gameState.orderLocked && !isEdit) {
+      return {
+        success: false,
+        error: 'Urutan kartu sudah dikunci. Tidak dapat menambah soal baru ke dalam deck.',
+      };
+    }
+
+    const nextMaster = isEdit
+      ? masterQuestions.map((q) => (q.id === question.id ? question : q))
+      : [...masterQuestions, question];
+    setMasterQuestions(nextMaster);
+
     const orderIdx = isEdit
       ? gameState.questions.findIndex((q) => q.id === question.id)
       : gameState.questions.length;
@@ -682,12 +790,17 @@ export default function App() {
           prev.status === 'paused' ||
           prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
 
-        const nextQuestions = isEdit
-          ? prev.questions.map((q) => (q.id === question.id ? question : q))
-          : [...prev.questions, question];
+        let nextQuestions: Question[];
+        if (prev.orderLocked) {
+          nextQuestions = isEdit
+            ? prev.questions.map((q) => (q.id === question.id ? question : q))
+            : prev.questions;
+        } else {
+          nextQuestions = filterQuestionsByCategory(nextMaster, prev.settings.selectedTopic);
+        }
 
         const newDecks = !isMatchStarted
-          ? generateTeamCardDecks(prev.teams, nextQuestions, nextQuestions.length, true)
+          ? generateTeamCardDecks(prev.teams, nextQuestions)
           : prev.teamCardDecks;
 
         const nextState: GameState = {
@@ -707,6 +820,16 @@ export default function App() {
   const handleDeleteQuestionDirect = async (
     questionId: string
   ): Promise<{ success: boolean; error?: string }> => {
+    if (gameState.orderLocked) {
+      return {
+        success: false,
+        error: 'Urutan kartu sudah dikunci. Buka kembali status finalisasi sebelum menghapus soal.',
+      };
+    }
+
+    const nextMaster = masterQuestions.filter((q) => q.id !== questionId);
+    setMasterQuestions(nextMaster);
+
     const result = await deleteQuestionFromDb(currentRoomId, questionId);
     if (result.success) {
       setGameState((prev) => {
@@ -715,9 +838,9 @@ export default function App() {
           prev.status === 'paused' ||
           prev.teams.some((t) => (t.score && t.score > 0) || (t.correctCount && t.correctCount > 0));
 
-        const nextQuestions = prev.questions.filter((q) => q.id !== questionId);
+        const nextQuestions = filterQuestionsByCategory(nextMaster, prev.settings.selectedTopic);
         const newDecks = !isMatchStarted
-          ? generateTeamCardDecks(prev.teams, nextQuestions, nextQuestions.length, true)
+          ? generateTeamCardDecks(prev.teams, nextQuestions)
           : prev.teamCardDecks;
 
         const nextState: GameState = {
@@ -734,9 +857,9 @@ export default function App() {
     }
   };
 
-  const handleRegenerateDecks = (_cardsPerTeam?: number, randomized: boolean = true) => {
+  const handleRegenerateDecks = (_cardsPerTeam?: number, _randomized: boolean = false) => {
     setGameState((prev) => {
-      const newDecks = generateTeamCardDecks(prev.teams, prev.questions, prev.questions.length, randomized);
+      const newDecks = generateTeamCardDecks(prev.teams, prev.questions);
       const nextState: GameState = {
         ...prev,
         teamCardDecks: newDecks,
@@ -822,20 +945,24 @@ export default function App() {
   };
 
   const handleLoadDemoData = () => {
+    setMasterQuestions(DEMO_QUESTIONS);
     const demo = createDemoState();
-    const decks = generateTeamCardDecks(demo.teams, demo.questions, 10, true);
+    const activeTopic = gameState.settings.selectedTopic || '';
+    const filtered = filterQuestionsByCategory(DEMO_QUESTIONS, activeTopic);
+    const decks = generateTeamCardDecks(demo.teams, filtered);
     const now = Date.now();
     const demoState: GameState = {
       competitionId: currentRoomId,
       settings: {
         ...DEFAULT_SETTINGS,
+        selectedTopic: activeTopic,
         durationMinutes: 5,
         pointsPerCorrect: 10,
         penaltyWrong: 0,
         wrongAnswerRule: 'retry',
       },
       teams: demo.teams,
-      questions: demo.questions,
+      questions: filtered,
       teamCardDecks: decks,
       status: 'ready',
       timeRemainingSeconds: 5 * 60,
@@ -849,7 +976,7 @@ export default function App() {
           timestamp: now,
           timeFormatted: new Date(now).toLocaleTimeString('id-ID'),
           type: 'game_start',
-          message: '📦 Data Demo berhasil dimuat: 4 Kelompok (ALPHA, BRAVO, CHARLIE, DELTA), 10 Soal, Durasi 5 Menit.',
+          message: `📦 Data Demo berhasil dimuat: 4 Kelompok, ${filtered.length} Soal${activeTopic ? ` (Topik: "${activeTopic}")` : ''}, Durasi 5 Menit.`,
         },
       ],
     };
@@ -862,7 +989,7 @@ export default function App() {
   const handleResetMatch = () => {
     const now = Date.now();
     setGameState((prev) => {
-      const decks = generateTeamCardDecks(prev.teams, prev.questions, 10, true);
+      const decks = generateTeamCardDecks(prev.teams, prev.questions);
       const resetTeams = prev.teams.map((t) => ({ ...t, score: 0, correctCount: 0, wrongCount: 0 }));
       const nextState: GameState = {
         ...prev,
@@ -933,6 +1060,52 @@ export default function App() {
   const totalCorrect = gameState.teams.reduce((acc, t) => acc + t.correctCount, 0);
   const totalWrong = gameState.teams.reduce((acc, t) => acc + t.wrongCount, 0);
 
+  // Tab switcher with login guard for Admin
+  const handleTabChange = (tab: 'gate' | 'arena' | 'scoreboard' | 'admin' | 'print') => {
+    if (tab === 'admin' && !isAdminLoggedIn) {
+      sound.playClick();
+      setShowLoginModal(true);
+      return;
+    }
+    setActiveTab(tab);
+  };
+
+  const handleAdminLoginSuccess = () => {
+    setIsAdminLoggedIn(true);
+    setShowLoginModal(false);
+    setActiveTab('admin');
+  };
+
+  const handleLogoutAdmin = () => {
+    logoutAdmin();
+    setIsAdminLoggedIn(false);
+    sound.playClick();
+    setActiveTab('gate');
+  };
+
+  const handleShareLink = () => {
+    if (typeof window === 'undefined') return;
+    const url = `${window.location.origin}${window.location.pathname}?room=${currentRoomId}&tab=gate`;
+    navigator.clipboard.writeText(url);
+    sound.playClick();
+    setShareToastMessage(`Link Room ${currentRoomId} berhasil disalin!`);
+    setTimeout(() => setShareToastMessage(null), 3000);
+  };
+
+  const handleEnterAsTeamFromGate = (teamId: string) => {
+    handleSelectTeam(teamId);
+    setActiveTab('arena');
+  };
+
+  const handleEnterArenaHostFromGate = () => {
+    handleCancelActiveTeam();
+    setActiveTab('arena');
+  };
+
+  const handleEnterScoreboardFromGate = () => {
+    setActiveTab('scoreboard');
+  };
+
   if (isInitialLoading) {
     return (
       <div className="min-h-screen bg-[#020617] text-slate-100 flex flex-col items-center justify-center p-6 relative overflow-hidden font-sans">
@@ -990,11 +1163,19 @@ export default function App() {
       <div className="pointer-events-none fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-cyan-500/15 blur-[130px] rounded-full z-0" />
       <div className="pointer-events-none fixed top-[40%] left-[30%] w-[400px] h-[400px] bg-purple-500/10 blur-[140px] rounded-full z-0" />
 
+      {/* Quick Toast Notification */}
+      {shareToastMessage && (
+        <div className="fixed top-20 right-6 z-50 p-4 rounded-2xl bg-cyan-950/90 border border-cyan-400 text-cyan-300 font-bold text-xs flex items-center gap-2 shadow-[0_0_30px_rgba(6,182,212,0.4)] backdrop-blur-xl animate-fade-in">
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>{shareToastMessage}</span>
+        </div>
+      )}
+
       {/* Top Fixed Header with Global Timer & Navigation & Room Sync */}
       <HeaderNav
         gameState={gameState}
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={handleTabChange}
         onStartPause={handleStartPause}
         onResetTimer={handleResetTimer}
         isFullscreen={isFullscreen}
@@ -1004,10 +1185,27 @@ export default function App() {
         onChangeRoomId={handleChangeRoomId}
         onMigrateSuccess={() => loadRoomData(currentRoomId, false)}
         isSyncing={isSyncing}
+        isAdminLoggedIn={isAdminLoggedIn}
+        onLogoutAdmin={handleLogoutAdmin}
+        onShareLink={handleShareLink}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col justify-center py-4 px-2 sm:px-6 relative z-10">
+        {/* PUBLIC ACCESS GATE: Peserta & Link Game */}
+        {activeTab === 'gate' && (
+          <AccessGate
+            gameState={gameState}
+            currentRoomId={currentRoomId}
+            onChangeRoomId={handleChangeRoomId}
+            onEnterAsTeam={handleEnterAsTeamFromGate}
+            onEnterArenaHost={handleEnterArenaHostFromGate}
+            onEnterScoreboard={handleEnterScoreboardFromGate}
+            onRequestAdminLogin={() => setShowLoginModal(true)}
+          />
+        )}
+
+        {/* ARENA PERTANDINGAN */}
         {activeTab === 'arena' && (
           <GameArena
             gameState={gameState}
@@ -1020,11 +1218,15 @@ export default function App() {
           />
         )}
 
+        {/* KLASEMEN SCOREBOARD */}
         {activeTab === 'scoreboard' && <ScoreboardView gameState={gameState} />}
 
+        {/* DASHBOARD ADMIN / GURU (SOAL, MATCH, SETTING) */}
         {activeTab === 'admin' && (
           <AdminDashboard
             gameState={gameState}
+            masterQuestions={masterQuestions}
+            onSelectTopic={handleSelectTopic}
             onUpdateSettings={handleUpdateSettings}
             onUpdateTeams={handleUpdateTeams}
             onUpdateQuestions={handleUpdateQuestions}
@@ -1039,12 +1241,16 @@ export default function App() {
             onOverrideTeamScore={handleOverrideTeamScore}
             onLoadDemoData={handleLoadDemoData}
             onResetMatch={handleResetMatch}
+            onToggleOrderLock={handleToggleOrderLock}
             onOpenArena={() => setActiveTab('arena')}
             onOpenPrint={() => setActiveTab('print')}
             onOpenScoreboard={() => setActiveTab('scoreboard')}
+            onOpenGate={() => setActiveTab('gate')}
+            onLogoutAdmin={handleLogoutAdmin}
           />
         )}
 
+        {/* CETAK KARTU FISIK */}
         {activeTab === 'print' && (
           <PrintableCards
             gameState={gameState}
@@ -1075,12 +1281,19 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-slate-400 hidden md:inline">Measurement Block Blast v2.5 (Cloud Sync)</span>
+          <span className="text-slate-400 hidden md:inline">Measurement Block Blast v2.5 (Public Gate & Admin Protected)</span>
           <span className="bg-white/10 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-white/10 text-cyan-300 font-mono text-[10px]">
             ROOM: {currentRoomId} 🟢
           </span>
         </div>
       </footer>
+
+      {/* Admin Login Modal */}
+      <AdminLoginModal
+        isOpen={showLoginModal}
+        onClose={() => setShowLoginModal(false)}
+        onSuccess={handleAdminLoginSuccess}
+      />
 
       {/* Game Over Celebration Modal */}
       {showGameOverModal && (

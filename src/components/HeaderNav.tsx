@@ -13,6 +13,11 @@ import {
   Printer,
   Timer as TimerIcon,
   Flame,
+  DoorOpen,
+  Share2,
+  Lock,
+  LogOut,
+  Sparkles,
 } from 'lucide-react';
 import { GameState } from '../types';
 import { sound } from '../utils/sound';
@@ -20,8 +25,8 @@ import { DbSyncBar } from './DbSyncBar';
 
 interface HeaderNavProps {
   gameState: GameState;
-  activeTab: 'arena' | 'scoreboard' | 'admin' | 'print';
-  setActiveTab: (tab: 'arena' | 'scoreboard' | 'admin' | 'print') => void;
+  activeTab: 'gate' | 'arena' | 'scoreboard' | 'admin' | 'print';
+  setActiveTab: (tab: 'gate' | 'arena' | 'scoreboard' | 'admin' | 'print') => void;
   onStartPause: () => void;
   onResetTimer: () => void;
   isFullscreen: boolean;
@@ -31,6 +36,9 @@ interface HeaderNavProps {
   onChangeRoomId?: (newRoomId: string) => void;
   onMigrateSuccess?: () => void;
   isSyncing?: boolean;
+  isAdminLoggedIn?: boolean;
+  onLogoutAdmin?: () => void;
+  onShareLink?: () => void;
 }
 
 export const HeaderNav: React.FC<HeaderNavProps> = ({
@@ -46,6 +54,9 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   onChangeRoomId = () => {},
   onMigrateSuccess = () => {},
   isSyncing = false,
+  isAdminLoggedIn = false,
+  onLogoutAdmin = () => {},
+  onShareLink = () => {},
 }) => {
   const { status, timeRemainingSeconds, settings } = gameState;
 
@@ -61,12 +72,25 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
       <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
         {/* Game Title & Round Badge */}
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 bg-indigo-600 rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(79,70,229,0.4)] text-white font-black text-xl tracking-wider">
+          <div
+            onClick={() => {
+              sound.playClick();
+              setActiveTab('gate');
+            }}
+            className="w-11 h-11 bg-gradient-to-br from-indigo-600 to-cyan-600 rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(79,70,229,0.4)] text-white font-black text-xl tracking-wider cursor-pointer hover:scale-105 transition-transform"
+            title="Kembali ke Gerbang Akses MBB"
+          >
             M
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="font-bold text-base sm:text-lg text-white tracking-tight uppercase flex items-center gap-2">
+              <h1
+                onClick={() => {
+                  sound.playClick();
+                  setActiveTab('gate');
+                }}
+                className="font-bold text-base sm:text-lg text-white tracking-tight uppercase flex items-center gap-2 cursor-pointer hover:text-cyan-300 transition-colors"
+              >
                 {settings.matchTitle}
                 <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
               </h1>
@@ -151,15 +175,33 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
         <div className="flex items-center gap-2 sm:gap-2.5">
           {/* Main Navigation Tabs */}
           <nav className="flex items-center bg-white/5 backdrop-blur-lg p-1.5 rounded-2xl border border-white/10">
+            {/* Gerbang Akses Peserta (Public Link) */}
+            <button
+              id="tab-gate-btn"
+              onClick={() => {
+                sound.playClick();
+                setActiveTab('gate');
+              }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'gate'
+                  ? 'bg-cyan-500 text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.4)]'
+                  : 'text-slate-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <DoorOpen className="w-4 h-4" />
+              <span className="hidden sm:inline">Gerbang Akses</span>
+            </button>
+
+            {/* Arena Game */}
             <button
               id="tab-arena-btn"
               onClick={() => {
                 sound.playClick();
                 setActiveTab('arena');
               }}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
                 activeTab === 'arena'
-                  ? 'bg-cyan-500 text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.4)]'
+                  ? 'bg-teal-400 text-slate-950 shadow-[0_0_20px_rgba(45,212,191,0.4)]'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
               }`}
             >
@@ -167,13 +209,14 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               <span className="hidden sm:inline">Arena Game</span>
             </button>
 
+            {/* Scoreboard */}
             <button
               id="tab-scoreboard-btn"
               onClick={() => {
                 sound.playClick();
                 setActiveTab('scoreboard');
               }}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
                 activeTab === 'scoreboard'
                   ? 'bg-amber-500 text-slate-950 shadow-[0_0_20px_rgba(245,158,11,0.4)]'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
@@ -183,29 +226,38 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               <span className="hidden sm:inline">Scoreboard</span>
             </button>
 
+            {/* Admin / Guru (Protected) */}
             <button
               id="tab-admin-btn"
               onClick={() => {
                 sound.playClick();
                 setActiveTab('admin');
               }}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
                 activeTab === 'admin'
                   ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(79,70,229,0.4)]'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
               }`}
             >
-              <Settings className="w-4 h-4" />
-              <span className="hidden sm:inline">Admin / Guru</span>
+              {isAdminLoggedIn ? (
+                <Settings className="w-4 h-4 text-indigo-300" />
+              ) : (
+                <Lock className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="hidden sm:inline">Guru / Admin</span>
+              {isAdminLoggedIn && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
+              )}
             </button>
 
+            {/* Cetak Kartu */}
             <button
               id="tab-print-btn"
               onClick={() => {
                 sound.playClick();
                 setActiveTab('print');
               }}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
                 activeTab === 'print'
                   ? 'bg-emerald-500 text-slate-950 shadow-[0_0_20px_rgba(16,185,129,0.4)]'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
@@ -215,6 +267,30 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               <span className="hidden md:inline">Cetak Kartu</span>
             </button>
           </nav>
+
+          {/* Quick Share Link Button */}
+          <button
+            id="btn-header-share-link"
+            type="button"
+            onClick={onShareLink}
+            title="Bagikan Tautan Game Peserta"
+            className="p-2.5 rounded-2xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/30 text-cyan-300 hover:text-cyan-200 backdrop-blur-md transition-all flex items-center justify-center"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
+
+          {/* Admin Logout Button (visible if logged in) */}
+          {isAdminLoggedIn && (
+            <button
+              id="btn-header-admin-logout"
+              type="button"
+              onClick={onLogoutAdmin}
+              title="Keluar / Kunci Akun Admin"
+              className="p-2.5 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:text-rose-200 backdrop-blur-md transition-all flex items-center justify-center"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
 
           {/* Audio Sound Toggle */}
           <button
@@ -249,3 +325,4 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
     </header>
   );
 };
+

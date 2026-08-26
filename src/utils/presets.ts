@@ -273,6 +273,36 @@ export const DEMO_QUESTIONS: Question[] = [
 export const DEFAULT_QUESTIONS: Question[] = DEMO_QUESTIONS;
 
 /**
+ * Extracts unique topic/category names from a list of questions, sorted alphabetically.
+ * Ignores empty/whitespace categories.
+ */
+export function getUniqueQuestionCategories(questions: Question[]): string[] {
+  if (!questions || questions.length === 0) return [];
+  const set = new Set<string>();
+  questions.forEach((q) => {
+    const cat = q.category?.trim();
+    if (cat) {
+      set.add(cat);
+    }
+  });
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'id', { sensitivity: 'base' }));
+}
+
+/**
+ * Filters questions by category/topic.
+ * If topic is empty, undefined, or "ALL" / "Semua Topik" -> returns all questions as a shallow copy.
+ * Strictly maintains order_index / sequence order.
+ */
+export function filterQuestionsByCategory(questions: Question[], category?: string): Question[] {
+  if (!questions || questions.length === 0) return [];
+  if (!category || !category.trim() || category.toUpperCase() === 'ALL' || category.toLowerCase() === 'semua topik') {
+    return [...questions];
+  }
+  const normalized = category.trim().toLowerCase();
+  return questions.filter((q) => (q.category || '').trim().toLowerCase() === normalized);
+}
+
+/**
  * Generates initial/demo state with 4 teams, 10 questions, 5 min duration
  */
 export function createDemoState(): {
@@ -293,51 +323,34 @@ export function createDemoState(): {
 }
 
 /**
- * Generates randomized card decks for all teams from question pool.
- * CORE RULE: EVERY team gets ALL questions in the question bank (questions.length).
- * Only the order (permutation) is randomized per team without duplicates.
+ * Generates fixed, deterministic card decks for all teams from question pool.
+ * CORE RULE (SINGLE SOURCE OF TRUTH):
+ * Every team gets ALL questions in the EXACT order of the question bank (order_index / array sequence).
+ * Card 1 = Question 1, Card 2 = Question 2, ..., Card N = Question N for all teams.
+ * This guarantees 100% consistency across Print, Admin Editor, DB, and Game Arena.
  */
 export function generateTeamCardDecks(
   teams: Team[],
   questions: Question[],
   _cardsPerTeam?: number,
-  randomized: boolean = true
+  _randomized: boolean = false
 ): Record<string, TeamCardAssignment[]> {
   const decks: Record<string, TeamCardAssignment[]> = {};
   if (!questions || questions.length === 0 || !teams || teams.length === 0) {
     return decks;
   }
 
-  const allQuestionIds = questions.map((q) => q.id);
-
-  teams.forEach((team, teamIdx) => {
-    // Clone all question indices
-    const questionIndices = Array.from({ length: questions.length }, (_, i) => i);
-
-    if (randomized && questionIndices.length > 1) {
-      // Fisher-Yates shuffle with unique seed per team
-      for (let i = questionIndices.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [questionIndices[i], questionIndices[j]] = [questionIndices[j], questionIndices[i]];
-      }
-
-      // If by chance for second+ team the permutation is exactly sequential, shift it by teamIdx
-      if (teamIdx > 0 && questionIndices.every((val, idx) => val === idx)) {
-        const shift = teamIdx % questionIndices.length;
-        const shifted = [...questionIndices.slice(shift), ...questionIndices.slice(0, shift)];
-        questionIndices.splice(0, questionIndices.length, ...shifted);
-      }
-    }
-
+  // Strictly respect question sequence (order_index / array order)
+  teams.forEach((team) => {
     const teamPrefix = team.name.replace(/[^A-Z0-9]/gi, '').slice(0, 3).toUpperCase() || 'K';
 
-    const cards: TeamCardAssignment[] = questionIndices.map((qIdx, cardIndex) => {
+    const cards: TeamCardAssignment[] = questions.map((q, cardIndex) => {
       const cardNum = cardIndex + 1;
       const formattedNum = String(cardNum).padStart(2, '0');
       return {
         cardNumber: cardNum,
         cardCode: `${teamPrefix}-${formattedNum}`,
-        questionId: questions[qIdx].id,
+        questionId: q.id,
         status: 'unanswered',
         attempts: 0,
       };

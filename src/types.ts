@@ -67,6 +67,9 @@ export interface Question {
 
   // Extension for Multi Part
   multiPartConfig?: MultiPartConfig;
+
+  // Single Source of Truth Order
+  orderIndex?: number;
 }
 
 export type QuestionCardStatus = 'unanswered' | 'correct' | 'wrong' | 'locked';
@@ -89,6 +92,7 @@ export interface TeamCardDeck {
 export interface GameSettings {
   matchTitle: string;
   roundName: string;
+  selectedTopic?: string; // Phase 3: Topik/Kategori Soal yang dipilih untuk pertandingan (e.g. "Alat Ukur" or "" for All)
   durationMinutes: number; // Durasi keseluruhan game dalam menit
   questionTimeLimitSeconds: number; // Batas waktu menjawab khusus per soal (detik), misal 30 detik
   enableQuestionTimer: boolean; // Aktifkan/nonaktifkan batas waktu khusus per soal
@@ -117,6 +121,7 @@ export interface ActivityLog {
 export interface GameState {
   competitionId?: string; // Room ID e.g. "MBB-2026-001"
   startedAt?: number | null; // Server/host timestamp when timer started running
+  orderLocked?: boolean; // Single source of truth for question order lock status (defaults to false)
   settings: GameSettings;
   teams: Team[];
   questions: Question[];

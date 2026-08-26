@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS public.competitions (
   id VARCHAR(100) PRIMARY KEY,
   title VARCHAR(255) NOT NULL DEFAULT 'MEASUREMENT BLOCK BLAST',
   round_name VARCHAR(255) DEFAULT 'BABAK PENYISIHAN UTAMA',
+  selected_topic VARCHAR(150),
   duration_minutes INT DEFAULT 10,
   question_time_limit_seconds INT DEFAULT 30,
   enable_question_timer BOOLEAN DEFAULT TRUE,
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS public.competitions (
   wrong_answer_rule VARCHAR(20) DEFAULT 'retry',
   case_sensitive BOOLEAN DEFAULT FALSE,
   sound_enabled BOOLEAN DEFAULT TRUE,
+  order_locked BOOLEAN DEFAULT FALSE,
   status VARCHAR(20) DEFAULT 'ready',
   time_remaining_seconds INT DEFAULT 600,
   started_at BIGINT,
@@ -43,6 +45,10 @@ CREATE TABLE IF NOT EXISTS public.competitions (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration safety for existing competitions table
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS order_locked BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS selected_topic VARCHAR(150);
 
 -- 2. Tabel teams
 CREATE TABLE IF NOT EXISTS public.teams (
@@ -408,6 +414,7 @@ export const dbRowToQuestion = (row: any): Question => {
     statementConfig: resolvedStatementConfig,
     multiPartConfig,
     timeLimitSeconds: row.time_limit_seconds ? Number(row.time_limit_seconds) : undefined,
+    orderIndex: row.order_index !== undefined && row.order_index !== null ? Number(row.order_index) : undefined,
   };
 };
 
@@ -767,6 +774,7 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
     const settings: GameSettings = {
       matchTitle: compData.title || 'MEASUREMENT BLOCK BLAST',
       roundName: compData.round_name || 'BABAK PENYISIHAN UTAMA',
+      selectedTopic: compData.selected_topic || '',
       durationMinutes: Number(compData.duration_minutes) || 10,
       questionTimeLimitSeconds: Number(compData.question_time_limit_seconds) || 30,
       enableQuestionTimer: compData.enable_question_timer ?? true,
@@ -782,6 +790,7 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
     return {
       competitionId: compData.id,
       startedAt: compData.started_at ? Number(compData.started_at) : null,
+      orderLocked: compData.order_locked ?? false,
       settings,
       teams,
       questions,
@@ -811,10 +820,11 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
     const roomId = competitionId || state.competitionId || DEFAULT_ROOM_ID;
 
     // 1. Upsert competition
-    const compRow = {
+    const compRow: Record<string, any> = {
       id: roomId,
       title: state.settings.matchTitle,
       round_name: state.settings.roundName,
+      selected_topic: state.settings.selectedTopic || null,
       duration_minutes: state.settings.durationMinutes,
       question_time_limit_seconds: state.settings.questionTimeLimitSeconds ?? 30,
       enable_question_timer: state.settings.enableQuestionTimer ?? true,
@@ -823,6 +833,7 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
       wrong_answer_rule: state.settings.wrongAnswerRule,
       case_sensitive: state.settings.caseSensitive,
       sound_enabled: state.settings.soundEnabled,
+      order_locked: state.orderLocked ?? false,
       status: state.status,
       time_remaining_seconds: state.timeRemainingSeconds,
       started_at: state.startedAt || null,
@@ -833,7 +844,16 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
       updated_at: new Date().toISOString(),
     };
 
-    const { error: compErr } = await supabase.from('competitions').upsert(compRow);
+    let { error: compErr } = await supabase.from('competitions').upsert(compRow);
+    if (compErr && (compErr.message?.includes('order_locked') || compErr.message?.includes('selected_topic'))) {
+      // Fallback if order_locked or selected_topic column not yet migrated in old remote DB
+      const fallbackRow = { ...compRow };
+      if (compErr.message?.includes('order_locked')) delete fallbackRow.order_locked;
+      if (compErr.message?.includes('selected_topic')) delete fallbackRow.selected_topic;
+      const res = await supabase.from('competitions').upsert(fallbackRow);
+      compErr = res.error;
+    }
+
     if (compErr) {
       if (compErr.code === 'PGRST205' || compErr.message?.includes('Could not find the table')) {
         console.warn('[Save Comp Supabase] Tabel belum siap di Supabase. Jalankan skema SQL di SQL Editor Supabase untuk mengaktifkan sinkronisasi.');
@@ -1091,3 +1111,34 @@ export const subscribeToRoomRealtime = (
     supabase.removeChannel(channel);
   };
 };
+
+/**
+ * Explicitly update the order_locked status for a competition
+ */
+export const setCompetitionOrderLockedInDb = async (
+  competitionId: string,
+  locked: boolean
+): Promise<{ success: boolean; error?: string }> => {
+  const supabase = getSupabase();
+  if (!supabase) return { success: false, error: 'Supabase client tidak tersedia.' };
+
+  try {
+    const { error } = await supabase
+      .from('competitions')
+      .update({
+        order_locked: locked,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', competitionId);
+
+    if (error) {
+      console.error('[setCompetitionOrderLockedInDb Error]', error);
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  } catch (err: any) {
+    console.error('[setCompetitionOrderLockedInDb Exception]', err);
+    return { success: false, error: err?.message || 'Gagal mengubah status kunci urutan.' };
+  }
+};
+
