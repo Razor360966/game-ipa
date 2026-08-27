@@ -1,9 +1,7 @@
 // Supabase Authentication & Security Module for MBB Admin / Guru
 // Single Source of Truth: Supabase Cloud Authentication (GoTrue)
-// NO plaintext or hardcoded admin passwords in localStorage as source of truth.
+// NO plaintext or hashed admin passwords are stored in localStorage as source of truth.
 import { getSupabase } from '../services/supabase';
-import { getUserProfileFromDb, upsertUserProfileInDb } from '../services/dbService';
-import type { UserProfile, UserRole } from '../types';
 import type { User, Session, AuthChangeEvent } from '@supabase/supabase-js';
 
 // Default Admin / Teacher Email
@@ -288,86 +286,3 @@ export async function changeAdminPassword(
     };
   }
 }
-
-/**
- * Sends a password reset recovery link via Supabase Auth email.
- */
-export async function requestPasswordReset(
-  email: string
-): Promise<{ success: boolean; message?: string; error?: string }> {
-  const supabase = getSupabase();
-  if (!supabase) {
-    return {
-      success: false,
-      error: 'Supabase client belum terkonfigurasi. Periksa koneksi Supabase Anda.',
-    };
-  }
-
-  const targetEmail = email.trim();
-  if (!targetEmail) {
-    return {
-      success: false,
-      error: 'Email wajib diisi untuk mengirim link pemulihan password.',
-    };
-  }
-
-  try {
-    const { error } = await supabase.auth.resetPasswordForEmail(targetEmail, {
-      redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
-    });
-
-    if (error) {
-      return {
-        success: false,
-        error: error.message || 'Gagal mengirim email reset password.',
-      };
-    }
-
-    return {
-      success: true,
-      message: `Link reset password telah dikirim ke ${targetEmail}. Silakan periksa inbox / spam Anda.`,
-    };
-  } catch (err: any) {
-    console.error('[MBB][AUTH Reset Password Error]', err);
-    return {
-      success: false,
-      error: err?.message || 'Terjadi kesalahan saat memproses permintaan reset password.',
-    };
-  }
-}
-
-/**
- * Returns the current authenticated admin / teacher UserProfile from DB.
- */
-export async function getCurrentAdminProfile(): Promise<UserProfile | null> {
-  const user = await getCurrentAdminUser();
-  if (!user) return null;
-
-  try {
-    const dbProfile = await getUserProfileFromDb(user.id);
-    if (dbProfile) return dbProfile;
-
-    // Fallback initialize profile
-    const userRole: UserRole =
-      user.email === DEFAULT_ADMIN_EMAIL || (user.app_metadata && user.app_metadata.role === 'admin')
-        ? 'admin'
-        : 'teacher';
-
-    const fallbackProfile: UserProfile = {
-      id: user.id,
-      email: user.email || DEFAULT_ADMIN_EMAIL,
-      role: userRole,
-    };
-
-    await upsertUserProfileInDb(fallbackProfile);
-    return fallbackProfile;
-  } catch (err) {
-    console.error('[getCurrentAdminProfile Error]', err);
-    return {
-      id: user.id,
-      email: user.email || DEFAULT_ADMIN_EMAIL,
-      role: 'teacher',
-    };
-  }
-}
-

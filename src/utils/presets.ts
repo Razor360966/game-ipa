@@ -298,55 +298,11 @@ export function getTopicIcon(topicName: string): string {
 }
 
 /**
- * Category Normalization Helper (Phase 4 requirement)
- * Normalizes a category name for grouping and playlist matching (case-insensitive and trimmed).
- * e.g. "Suhu" -> "suhu", " suhu " -> "suhu", "SUHU" -> "suhu".
- * Does NOT alter the original category text stored in question.
+ * Normalizes a category name for grouping (case-insensitive and trimmed).
  */
-export function normalizeQuestionCategory(category?: string): string {
+export function normalizeCategoryKey(category?: string): string {
   if (!category) return '';
   return category.trim().toLowerCase();
-}
-
-/**
- * Backward compatibility alias for normalizeQuestionCategory
- */
-export const normalizeCategoryKey = normalizeQuestionCategory;
-
-export interface QuestionCategoryItem {
-  key: string;
-  label: string;
-  count: number;
-}
-
-/**
- * Extracts unique topic/category names and their question counts from Master Question Bank.
- * Returns structured items sorted alphabetically for clean UI rendering.
- */
-export function getQuestionCategoryItems(questions: Question[]): QuestionCategoryItem[] {
-  if (!questions || questions.length === 0) return [];
-  const map = new Map<string, { label: string; count: number }>();
-
-  questions.forEach((q) => {
-    const raw = q.category?.trim();
-    if (raw) {
-      const key = normalizeQuestionCategory(raw);
-      const existing = map.get(key);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        map.set(key, { label: raw, count: 1 });
-      }
-    }
-  });
-
-  return Array.from(map.entries())
-    .map(([key, item]) => ({
-      key,
-      label: item.label,
-      count: item.count,
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label, 'id', { sensitivity: 'base' }));
 }
 
 /**
@@ -355,7 +311,20 @@ export function getQuestionCategoryItems(questions: Question[]): QuestionCategor
  */
 export function getUniqueQuestionCategories(questions: Question[]): string[] {
   if (!questions || questions.length === 0) return [];
-  return getQuestionCategoryItems(questions).map((item) => item.label);
+  const map = new Map<string, string>(); // normalizedKey -> originalCleanLabel
+
+  questions.forEach((q) => {
+    const raw = q.category?.trim();
+    if (raw) {
+      const key = normalizeCategoryKey(raw);
+      if (!map.has(key)) {
+        // Capitalize first letter of words if needed, or keep clean label
+        map.set(key, raw);
+      }
+    }
+  });
+
+  return Array.from(map.values()).sort((a, b) => a.localeCompare(b, 'id', { sensitivity: 'base' }));
 }
 
 /**

@@ -16,13 +16,7 @@ import {
   Tag,
 } from 'lucide-react';
 import { Question, PlaylistMode, GameSettings, QuestionPlaylist } from '../types';
-import {
-  getQuestionPlaylists,
-  filterQuestionsByPlaylist,
-  normalizeQuestionCategory,
-  normalizeCategoryKey,
-  getQuestionCategoryItems,
-} from '../utils/presets';
+import { getQuestionPlaylists, filterQuestionsByPlaylist, normalizeCategoryKey } from '../utils/presets';
 import { sound } from '../utils/sound';
 
 interface PlaylistManagerProps {

@@ -746,13 +746,6 @@ export default function App() {
     const activeQuestionIds = snapshotQuestions.map((q) => q.id);
     const newDecks = generateTeamCardDecks(gameState.teams, snapshotQuestions);
 
-    console.log('[PLAYLIST]');
-    console.log('selected playlist:', options.playlistName || options.selectedTopic || playlistMode);
-    console.log('filtered questions:', snapshotQuestions.map((q) => q.code));
-    console.log('activeQuestionIds:', activeQuestionIds);
-    console.log('snapshot count:', snapshotQuestions.length);
-    console.log('deck count:', Object.keys(newDecks).map((tId) => `${tId}: ${newDecks[tId].length}`));
-
     setGameState((prev) => {
       const nextSettings: GameSettings = {
         ...prev.settings,
