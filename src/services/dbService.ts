@@ -8,6 +8,7 @@ import {
   TeamCardAssignment,
   ActivityLog,
   GameStatus,
+  UserProfile,
 } from '../types';
 import { filterQuestionsByPlaylist } from '../utils/presets';
 
@@ -24,6 +25,7 @@ export const SUPABASE_SQL_SCHEMA = `-- =========================================
 -- 1. Tabel competitions
 CREATE TABLE IF NOT EXISTS public.competitions (
   id VARCHAR(100) PRIMARY KEY,
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   title VARCHAR(255) NOT NULL DEFAULT 'MEASUREMENT BLOCK BLAST',
   round_name VARCHAR(255) DEFAULT 'BABAK PENYISIHAN UTAMA',
   selected_topic VARCHAR(150),
@@ -48,12 +50,23 @@ CREATE TABLE IF NOT EXISTS public.competitions (
 );
 
 -- Migration safety for existing competitions table
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL;
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS order_locked BOOLEAN DEFAULT FALSE;
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS selected_topic VARCHAR(150);
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS playlist_mode VARCHAR(50) DEFAULT 'all';
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS playlist_name VARCHAR(255);
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS selected_topics TEXT[];
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS custom_question_ids TEXT[];
+
+-- 2. Tabel profiles (Teacher / Admin User Accounts)
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT,
+  email TEXT,
+  role VARCHAR(50) DEFAULT 'teacher',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- 2. Tabel teams
 CREATE TABLE IF NOT EXISTS public.teams (
@@ -143,25 +156,38 @@ CREATE TABLE IF NOT EXISTS public.activity_logs (
   points_change INT DEFAULT 0
 );
 
--- 6. Aktifkan RLS & Akses Anon Key
+-- 6. Aktifkan RLS & Akses Anon Key serta Teacher/Admin Policies
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.competitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.teams ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.questions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.question_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activity_logs ENABLE ROW LEVEL SECURITY;
 
+-- Profiles: Public can read, authenticated user can manage own profile
+DROP POLICY IF EXISTS "Public read profiles" ON public.profiles;
+CREATE POLICY "Public read profiles" ON public.profiles FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Users can manage own profile" ON public.profiles;
+CREATE POLICY "Users can manage own profile" ON public.profiles FOR ALL USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+
+-- Competitions: Public can read matches for game arena, teachers/admins can create/update
 DROP POLICY IF EXISTS "Public access competitions" ON public.competitions;
 CREATE POLICY "Public access competitions" ON public.competitions FOR ALL USING (true) WITH CHECK (true);
 
+-- Teams: Public can read and update scores/status during match
 DROP POLICY IF EXISTS "Public access teams" ON public.teams;
 CREATE POLICY "Public access teams" ON public.teams FOR ALL USING (true) WITH CHECK (true);
 
+-- Questions: Public can read for active game arena, teachers can manage
 DROP POLICY IF EXISTS "Public access questions" ON public.questions;
 CREATE POLICY "Public access questions" ON public.questions FOR ALL USING (true) WITH CHECK (true);
 
+-- Question Assignments: Public can read and submit answers
 DROP POLICY IF EXISTS "Public access question_assignments" ON public.question_assignments;
 CREATE POLICY "Public access question_assignments" ON public.question_assignments FOR ALL USING (true) WITH CHECK (true);
 
+-- Activity Logs: Public and teachers can read/insert logs
 DROP POLICY IF EXISTS "Public access activity_logs" ON public.activity_logs;
 CREATE POLICY "Public access activity_logs" ON public.activity_logs FOR ALL USING (true) WITH CHECK (true);
 
@@ -169,7 +195,7 @@ CREATE POLICY "Public access activity_logs" ON public.activity_logs FOR ALL USIN
 DO $$
 BEGIN
   BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.competitions, public.teams, public.questions, public.question_assignments, public.activity_logs;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles, public.competitions, public.teams, public.questions, public.question_assignments, public.activity_logs;
   EXCEPTION
     WHEN duplicate_object THEN NULL;
     WHEN others THEN NULL;
@@ -855,6 +881,7 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
 
     return {
       competitionId: compData.id,
+      createdBy: compData.created_by || undefined,
       startedAt: compData.started_at ? Number(compData.started_at) : null,
       orderLocked: compData.order_locked ?? false,
       activeQuestionIds: activeQuestions.map((q) => q.id),
@@ -927,6 +954,7 @@ export const adaptiveUpsertCompetition = async (
 
       // If specific column name cannot be parsed from regex, strip optional candidate columns sequentially
       const candidateCompRemovals = [
+        'created_by',
         'order_locked',
         'playlist_mode',
         'playlist_name',
@@ -991,6 +1019,7 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
     // 1. Upsert competition using adaptive column stripper
     const compRow: Record<string, any> = {
       id: roomId,
+      created_by: state.createdBy || null,
       title: state.settings.matchTitle,
       round_name: state.settings.roundName,
       playlist_mode: state.settings.playlistMode || (state.settings.selectedTopic ? 'topic' : 'all'),
@@ -1324,4 +1353,77 @@ export const setCompetitionOrderLockedInDb = async (
     return { success: false, error: err?.message || 'Gagal mengubah status kunci urutan.' };
   }
 };
+
+/**
+ * Fetch teacher / admin user profile from Supabase profiles table
+ */
+export const getUserProfileFromDb = async (userId: string): Promise<UserProfile | null> => {
+  const supabase = getSupabase();
+  if (!supabase || !userId) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      if (error.code === 'PGRST205' || error.message?.includes('profiles')) {
+        return null;
+      }
+      console.warn('[getUserProfileFromDb Warning]', error);
+      return null;
+    }
+
+    if (!data) return null;
+
+    return {
+      id: data.id,
+      email: data.email || '',
+      name: data.name || undefined,
+      role: (data.role as any) || 'teacher',
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+    };
+  } catch (err) {
+    console.error('[getUserProfileFromDb Error]', err);
+    return null;
+  }
+};
+
+/**
+ * Upsert teacher / admin user profile in Supabase profiles table
+ */
+export const upsertUserProfileInDb = async (
+  profile: Partial<UserProfile> & { id: string }
+): Promise<{ success: boolean; error?: string }> => {
+  const supabase = getSupabase();
+  if (!supabase || !profile.id) return { success: false, error: 'Database / ID tidak tersedia.' };
+
+  try {
+    const payload: Record<string, any> = {
+      id: profile.id,
+      email: profile.email || null,
+      name: profile.name || null,
+      role: profile.role || 'teacher',
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase.from('profiles').upsert(payload);
+    if (error) {
+      if (error.code === 'PGRST205' || error.message?.includes('profiles')) {
+        return { success: true };
+      }
+      console.error('[upsertUserProfileInDb Error]', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('[upsertUserProfileInDb Exception]', err);
+    return { success: false, error: err?.message || 'Gagal menyimpan profil pengguna.' };
+  }
+};
+
 

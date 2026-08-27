@@ -1,3 +1,14 @@
+export type UserRole = 'admin' | 'teacher';
+
+export interface UserProfile {
+  id: string; // UUID from auth.users
+  email: string;
+  name?: string;
+  role: UserRole;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export type TeamColor = 'blue' | 'emerald' | 'amber' | 'rose' | 'purple' | 'cyan' | 'orange' | 'indigo';
 
 export interface Team {
@@ -144,6 +155,7 @@ export interface ActivityLog {
 
 export interface GameState {
   competitionId?: string; // Room ID e.g. "MBB-2026-001"
+  createdBy?: string; // UUID of owner teacher / admin from auth.users
   startedAt?: number | null; // Server/host timestamp when timer started running
   orderLocked?: boolean; // Single source of truth for question order lock status (defaults to false)
   activeQuestionIds?: string[]; // Explicit snapshot list of question IDs actively used in match
