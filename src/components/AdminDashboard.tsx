@@ -72,6 +72,9 @@ import {
   filterQuestionsByCategory,
   normalizeCategoryKey,
   getTopicIcon,
+  getResolvedQuestionForTeam,
+  validateTeamQuestionDistribution,
+  computeVariantSnapshotHash,
 } from '../utils/presets';
 import { sound } from '../utils/sound';
 import { AccountSecuritySection } from './AccountSecuritySection';
@@ -198,6 +201,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     multiPartIntro: string;
     multiPartItems: { id: string; question: string; correctAnswer: string; alternativeAnswersText: string }[];
     multiPartScoringMode: 'full' | 'partial';
+    difficulty?: 'easy' | 'medium' | 'hard' | string;
     // Per-Question Custom Timer (in seconds, optional)
     timeLimitSeconds: number | string;
   }>({
@@ -208,6 +212,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     alternativeAnswersText: '',
     points: 10,
     category: '',
+    difficulty: 'medium',
     unitHint: '',
     explanation: '',
     options: [
@@ -457,6 +462,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       alternativeAnswersText: '',
       points: settings.pointsPerCorrect || 10,
       category: '',
+      difficulty: 'medium',
       unitHint: '',
       explanation: '',
       options: [
@@ -527,6 +533,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       alternativeAnswersText: (question.alternativeAnswers || []).join(', '),
       points: question.points || 10,
       category: question.category ?? '',
+      difficulty: question.difficulty || 'medium',
       unitHint: question.unitHint || '',
       explanation: question.explanation || '',
       options: resolvedOptions,
@@ -677,6 +684,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           alternativeAnswers: finalAltAnswers,
           points: Number(questionForm.points),
           category: finalCategory,
+          difficulty: questionForm.difficulty || 'medium',
           explanation: questionForm.explanation.trim(),
           ...extraData,
         };
@@ -689,6 +697,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           alternativeAnswers: finalAltAnswers,
           points: Number(questionForm.points),
           category: finalCategory,
+          difficulty: questionForm.difficulty || 'medium',
           explanation: questionForm.explanation.trim(),
           ...extraData,
         };
@@ -2401,6 +2410,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   playlistName: opts.playlistName,
                   selectedTopic: opts.selectedTopic || '',
                   selectedTopics: opts.selectedTopics || [],
+                  selectedDifficulty: opts.selectedDifficulty || 'all',
+                  questionCount: opts.questionCount,
                   customQuestionIds: opts.customQuestionIds || [],
                 }));
                 if (onApplyPlaylist) {
@@ -3008,6 +3019,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               {/* PREVIEW URUTAN SOAL PER KELOMPOK */}
               <div className="space-y-4 pt-2">
+                {/* SNAPSHOT INTEGRITY BANNER */}
+                {gameState.teamQuestionVariants && Object.keys(gameState.teamQuestionVariants).length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-500/10 via-cyan-500/10 to-emerald-500/10 border border-cyan-400/30 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white uppercase tracking-wider text-xs">
+                            Snapshot Pertandingan Tersimpan & Terkunci
+                          </span>
+                          <span className="px-2 py-0.2 rounded-full text-[10px] font-black font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                            IMMUTABLE
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Variasi soal per kelompok terisolasi dari Master Bank & tersinkronisasi di seluruh perangkat.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="text-right font-mono text-[11px]">
+                        <span className="text-slate-400 block text-[10px] font-sans">Snapshot Integrity Hash</span>
+                        <span className="text-cyan-300 font-bold bg-slate-950/80 px-2 py-0.5 rounded border border-white/10">
+                          {gameState.variantSnapshotMeta?.snapshotHash ||
+                            computeVariantSnapshotHash(gameState.teamQuestionVariants)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h3 className="text-base font-bold text-white uppercase tracking-wider flex items-center gap-2">
@@ -3089,7 +3134,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 <tr className="border-b border-white/10 text-slate-400 uppercase text-[10px] tracking-wider">
                                   <th className="py-2.5 px-3 font-bold w-20 text-center">No Kartu</th>
                                   <th className="py-2.5 px-3 font-bold w-24 text-center">ID Bank Soal</th>
-                                  <th className="py-2.5 px-3 font-bold">Pertanyaan</th>
+                                  <th className="py-2.5 px-3 font-bold">Pertanyaan (Variasi Kelompok)</th>
                                   <th className="py-2.5 px-3 font-bold w-28">Jenis Soal</th>
                                   <th className="py-2.5 px-3 font-bold w-36">Kunci Jawaban</th>
                                   <th className="py-2.5 px-3 font-bold w-28 text-center">Status Live</th>
@@ -3097,7 +3142,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </thead>
                               <tbody className="divide-y divide-white/5">
                                 {deck.map((card) => {
-                                  const question = questions.find((q) => q.id === card.questionId);
+                                  const question = getResolvedQuestionForTeam(gameState, team.id, card.questionId || card.cardNumber);
                                   const formattedNum = String(card.cardNumber).padStart(2, '0');
                                   const qType = question?.type || 'short_answer';
 
@@ -3112,7 +3157,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                         {question?.code || card.questionId}
                                       </td>
                                       <td className="py-2.5 px-3 text-slate-200 font-medium max-w-sm">
-                                        {question ? question.questionText : <span className="text-rose-400 italic">Soal tidak ditemukan</span>}
+                                        <div className="space-y-1">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            {question?.variantLabel && (
+                                              <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-purple-500/20 text-purple-300 border border-purple-400/30">
+                                                {question.variantLabel}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div>
+                                            {question ? question.questionText : <span className="text-rose-400 italic">Soal tidak ditemukan</span>}
+                                          </div>
+                                        </div>
                                       </td>
                                       <td className="py-2.5 px-3">
                                         <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-white/5 text-slate-300 border border-white/10">
@@ -3127,6 +3183,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                       </td>
                                       <td className="py-2.5 px-3 font-bold text-emerald-400 font-mono text-[11px]">
                                         {question?.correctAnswer || '-'}
+                                        {question?.alternativeAnswers && question.alternativeAnswers.length > 0 && (
+                                          <span className="block text-[9px] text-slate-400 font-normal">
+                                            Alt: {question.alternativeAnswers.slice(0, 2).join(', ')}
+                                          </span>
+                                        )}
                                       </td>
                                       <td className="py-2.5 px-3 text-center">
                                         {card.status === 'correct' ? (
@@ -3774,6 +3835,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     placeholder={`Default (${settings.questionTimeLimitSeconds ?? 30}s)`}
                     className="w-full bg-slate-950 border border-white/15 focus:border-amber-400 rounded-xl px-3.5 py-2 text-sm font-bold text-amber-300 placeholder:text-slate-600 outline-none"
                   />
+                </div>
+              </div>
+
+              {/* TINGKAT KESULITAN (EASY / MEDIUM / HARD) */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-300 uppercase">
+                  Tingkat Kesulitan (Difficulty Level)
+                </label>
+                <div className="grid grid-cols-3 gap-2.5">
+                  {[
+                    { id: 'easy', label: 'Mudah (Easy)', color: 'bg-emerald-500/20 border-emerald-400 text-emerald-300' },
+                    { id: 'medium', label: 'Sedang (Medium)', color: 'bg-amber-500/20 border-amber-400 text-amber-300' },
+                    { id: 'hard', label: 'Sulit (Hard)', color: 'bg-rose-500/20 border-rose-400 text-rose-300' },
+                  ].map((lvl) => {
+                    const isSelected = (questionForm.difficulty || 'medium').toLowerCase() === lvl.id;
+                    return (
+                      <button
+                        key={lvl.id}
+                        type="button"
+                        onClick={() => setQuestionForm({ ...questionForm, difficulty: lvl.id })}
+                        className={`p-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                          isSelected
+                            ? `${lvl.color} ring-1 ring-white/20 shadow-md`
+                            : 'bg-slate-950 border-white/10 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5" />}
+                        <span>{lvl.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

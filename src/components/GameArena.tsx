@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { GameState, Team, QuestionCardStatus } from '../types';
-import { COLOR_MAP } from '../utils/presets';
+import { COLOR_MAP, getResolvedQuestionForTeam } from '../utils/presets';
 import { sound } from '../utils/sound';
 import { checkAnswer } from '../utils/answerChecker';
 
@@ -101,13 +101,8 @@ export const GameArena: React.FC<GameArenaProps> = ({
 
   const selectedQuestion = React.useMemo(() => {
     if (!selectedCard) return null;
-    return (
-      questions.find((q) => q.id === selectedCard.questionId) ||
-      questions[(Number(selectedCard.cardNumber) - 1) % Math.max(1, questions.length)] ||
-      questions[0] ||
-      null
-    );
-  }, [selectedCard, questions]);
+    return getResolvedQuestionForTeam(gameState, activeTeamId, selectedCard.questionId || selectedCard.cardNumber);
+  }, [selectedCard, activeTeamId, gameState]);
 
   // -------------------------------------------------------------
   // PER-QUESTION TIMER HOOKS & CALCULATIONS

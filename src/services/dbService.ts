@@ -4,13 +4,14 @@ import {
   GameSettings,
   Team,
   Question,
+  QuestionVariant,
   QuestionType,
   TeamCardAssignment,
   ActivityLog,
   GameStatus,
   UserProfile,
 } from '../types';
-import { filterQuestionsByPlaylist } from '../utils/presets';
+import { filterQuestionsByPlaylist, resolveTeamQuestionVariants } from '../utils/presets';
 
 export const DEFAULT_ROOM_ID = 'MBB-2026-001';
 
@@ -57,6 +58,8 @@ ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS playlist_mode VARCHAR(5
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS playlist_name VARCHAR(255);
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS selected_topics TEXT[];
 ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS custom_question_ids TEXT[];
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS team_question_variants JSONB;
+ALTER TABLE public.competitions ADD COLUMN IF NOT EXISTS variant_snapshot_meta JSONB;
 
 -- 2. Tabel profiles (Teacher / Admin User Accounts)
 CREATE TABLE IF NOT EXISTS public.profiles (
@@ -879,6 +882,45 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
       pointsChange: l.points_change ? Number(l.points_change) : undefined,
     }));
 
+    // Resolve persisted teamQuestionVariants snapshot
+    let persistedVariants: Record<string, Record<string, QuestionVariant>> | undefined = undefined;
+    if (compData.team_question_variants) {
+      if (typeof compData.team_question_variants === 'string') {
+        try {
+          persistedVariants = JSON.parse(compData.team_question_variants);
+        } catch {
+          // ignore
+        }
+      } else if (typeof compData.team_question_variants === 'object') {
+        persistedVariants = compData.team_question_variants;
+      }
+    }
+
+    if (
+      !persistedVariants &&
+      compData.settings &&
+      typeof compData.settings === 'object' &&
+      compData.settings.teamQuestionVariants
+    ) {
+      persistedVariants = compData.settings.teamQuestionVariants;
+    }
+
+    // Resolve variantSnapshotMeta
+    let snapshotMeta: any = compData.variant_snapshot_meta || compData.settings?.variantSnapshotMeta || undefined;
+    if (typeof snapshotMeta === 'string') {
+      try {
+        snapshotMeta = JSON.parse(snapshotMeta);
+      } catch {
+        // ignore
+      }
+    }
+
+    // SINGLE SOURCE OF TRUTH: If snapshot exists in DB, USE EXISTING SNAPSHOT! DO NOT REGENERATE!
+    const finalVariants =
+      persistedVariants && Object.keys(persistedVariants).length > 0
+        ? persistedVariants
+        : resolveTeamQuestionVariants(teams, activeQuestions, compData.id);
+
     return {
       competitionId: compData.id,
       createdBy: compData.created_by || undefined,
@@ -889,6 +931,8 @@ export const loadCompetitionFromDb = async (competitionId: string): Promise<Game
       teams,
       questions: activeQuestions, // ACTIVE MATCH SNAPSHOT ONLY (DO NOT USE MASTER QUESTIONS)
       teamCardDecks,
+      teamQuestionVariants: finalVariants,
+      variantSnapshotMeta: snapshotMeta,
       status: (compData.status as GameStatus) || 'ready',
       timeRemainingSeconds: Number(compData.time_remaining_seconds) || settings.durationMinutes * 60,
       activeTeamId: compData.active_team_id || null,
@@ -954,6 +998,8 @@ export const adaptiveUpsertCompetition = async (
 
       // If specific column name cannot be parsed from regex, strip optional candidate columns sequentially
       const candidateCompRemovals = [
+        'team_question_variants',
+        'variant_snapshot_meta',
         'created_by',
         'order_locked',
         'playlist_mode',
@@ -1016,10 +1062,23 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
         ? state.questions.map((q) => q.id)
         : null;
 
+    // Auto-resolve created_by if current authenticated teacher is available
+    let currentUserId = state.createdBy || null;
+    if (!currentUserId) {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        if (authData?.user?.id) {
+          currentUserId = authData.user.id;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     // 1. Upsert competition using adaptive column stripper
     const compRow: Record<string, any> = {
       id: roomId,
-      created_by: state.createdBy || null,
+      created_by: currentUserId,
       title: state.settings.matchTitle,
       round_name: state.settings.roundName,
       playlist_mode: state.settings.playlistMode || (state.settings.selectedTopic ? 'topic' : 'all'),
@@ -1036,6 +1095,8 @@ export const saveCompetitionToDb = async (state: GameState, competitionId: strin
       case_sensitive: state.settings.caseSensitive,
       sound_enabled: state.settings.soundEnabled,
       order_locked: state.orderLocked ?? false,
+      team_question_variants: state.teamQuestionVariants || null,
+      variant_snapshot_meta: state.variantSnapshotMeta || null,
       status: state.status,
       time_remaining_seconds: state.timeRemainingSeconds,
       started_at: state.startedAt || null,

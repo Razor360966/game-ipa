@@ -56,6 +56,28 @@ export interface MultiPartConfig {
   scoringMode?: 'full' | 'partial'; // 'full' or 'partial'
 }
 
+export interface QuestionVariant {
+  id: string; // e.g. "q-01-var-1", "q-01-beta"
+  baseQuestionId: string; // Reference to parent base question ID
+  variantCode?: string; // e.g. "VAR-A", "VAR-B"
+  variantLabel?: string; // e.g. "Variasi Alpha", "Variasi 1"
+  questionText: string;
+  correctAnswer: string;
+  alternativeAnswers: string[];
+  type?: QuestionType;
+  points?: number;
+  category?: string;
+  explanation?: string;
+  unitHint?: string;
+  timeLimitSeconds?: number;
+  options?: MultipleChoiceOption[];
+  correctOptionId?: string;
+  statementConfig?: StatementCorrectionConfig;
+  multiPartConfig?: MultiPartConfig;
+  difficulty?: 'easy' | 'medium' | 'hard' | string;
+  parameters?: Record<string, any>; // e.g. { massa: 200, volume: 50 }
+}
+
 export interface Question {
   id: string;
   code: string; // e.g. "Q-01"
@@ -65,6 +87,7 @@ export interface Question {
   alternativeAnswers: string[]; // Variations like ["150 cm", "150cm", "1.5 m", "1,5 meter"]
   points: number;
   category?: string;
+  difficulty?: 'easy' | 'medium' | 'hard' | string;
   explanation?: string;
   unitHint?: string; // e.g. "cm", "kg", "m/s"
   timeLimitSeconds?: number; // Optional custom time limit for this specific question in seconds
@@ -81,6 +104,12 @@ export interface Question {
 
   // Single Source of Truth Order
   orderIndex?: number;
+
+  // Phase 6: Predefined question variants for deterministic per-team assignment
+  variantLabel?: string;
+  variantCode?: string;
+  variants?: QuestionVariant[];
+  hasVariants?: boolean;
 }
 
 export type QuestionCardStatus = 'unanswered' | 'correct' | 'wrong' | 'locked';
@@ -116,7 +145,17 @@ export interface MatchPlaylistConfig {
   mode: PlaylistMode; // 'all' | 'topic' | 'custom'
   selectedTopic?: string;
   selectedTopics?: string[];
+  selectedDifficulty?: 'all' | 'easy' | 'medium' | 'hard' | string;
+  questionCount?: number;
   questionIds: string[]; // explicit snapshot list of question IDs
+}
+
+export interface VariantSnapshotMeta {
+  version: number;
+  generatedAt: string;
+  engineVersion: string;
+  sourceQuestionIds: string[];
+  snapshotHash?: string;
 }
 
 export interface GameSettings {
@@ -126,8 +165,12 @@ export interface GameSettings {
   playlistName?: string; // e.g. "Pengukuran Dasar IPA Kelas 7"
   selectedTopic?: string; // Single topic mode (e.g. "Alat Ukur")
   selectedTopics?: string[]; // Multi-topic list for custom playlist mode
+  selectedDifficulty?: 'all' | 'easy' | 'medium' | 'hard' | string; // Level selection (all | easy | medium | hard)
+  questionCount?: number; // Quota of questions selected for match
   customQuestionIds?: string[]; // Explicit list of question IDs included in custom playlist
   playlist?: MatchPlaylistConfig; // Official snapshot configuration for match
+  teamQuestionVariants?: Record<string, Record<string, QuestionVariant>>; // Persisted snapshot in settings
+  variantSnapshotMeta?: VariantSnapshotMeta; // Snapshot metadata
   durationMinutes: number; // Durasi keseluruhan game dalam menit
   questionTimeLimitSeconds: number; // Batas waktu menjawab khusus per soal (detik), misal 30 detik
   enableQuestionTimer: boolean; // Aktifkan/nonaktifkan batas waktu khusus per soal
@@ -163,6 +206,8 @@ export interface GameState {
   teams: Team[];
   questions: Question[]; // ACTIVE MATCH QUESTION SNAPSHOT
   teamCardDecks: Record<string, TeamCardAssignment[]>; // key is teamId
+  teamQuestionVariants?: Record<string, Record<string, QuestionVariant>>; // Phase 6: teamId -> baseQuestionId -> QuestionVariant
+  variantSnapshotMeta?: VariantSnapshotMeta; // Phase 6B.1: Immutable snapshot metadata & verification hash
   status: GameStatus;
   timeRemainingSeconds: number;
   activeTeamId: string | null;

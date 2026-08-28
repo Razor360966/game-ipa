@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { GameState, Team, Question } from '../types';
 import { sound } from '../utils/sound';
-import { validateDecksAndQuestions } from '../utils/presets';
+import { validateDecksAndQuestions, getResolvedQuestionForTeam } from '../utils/presets';
 
 interface PrintableCardsProps {
   gameState: GameState;
@@ -45,8 +45,8 @@ export const PrintableCards: React.FC<PrintableCardsProps> = ({ gameState, onBac
     return validateDecksAndQuestions(teams, questions, teamCardDecks);
   }, [teams, questions, teamCardDecks]);
 
-  const getQuestionById = (qId: string): Question | undefined => {
-    return questions.find((q) => q.id === qId);
+  const getQuestionForTeam = (qId: string, teamId?: string): Question => {
+    return getResolvedQuestionForTeam(gameState, teamId, qId);
   };
 
   const handlePrint = () => {
@@ -496,7 +496,7 @@ export const PrintableCards: React.FC<PrintableCardsProps> = ({ gameState, onBac
                 {/* Question List (Numbered 01, 02, ... without bank ID or keys) */}
                 <div className={`flex-1 my-3 space-y-3 ${isCompactA4 ? 'space-y-2' : 'space-y-3.5'}`}>
                   {deck.map((card) => {
-                    const question = getQuestionById(card.questionId);
+                    const question = getQuestionForTeam(card.questionId, team.id);
                     if (!question) return null;
 
                     const formattedNum = String(card.cardNumber).padStart(2, '0');
@@ -639,7 +639,7 @@ export const PrintableCards: React.FC<PrintableCardsProps> = ({ gameState, onBac
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 print:grid-cols-2 print:gap-4">
                   {deck.map((card) => {
-                    const question = getQuestionById(card.questionId);
+                    const question = getQuestionForTeam(card.questionId, team.id);
                     if (!question) return null;
 
                     const formattedCardNum = String(card.cardNumber).padStart(2, '0');
@@ -811,7 +811,7 @@ export const PrintableCards: React.FC<PrintableCardsProps> = ({ gameState, onBac
                       </thead>
                       <tbody>
                         {deck.map((card) => {
-                          const question = getQuestionById(card.questionId);
+                          const question = getQuestionForTeam(card.questionId, team.id);
                           if (!question) return null;
 
                           return (

@@ -1,4 +1,24 @@
-import { Question, Team, TeamCardAssignment, TeamColor, PlaylistMode, QuestionPlaylist } from '../types';
+import { Question, Team, TeamCardAssignment, TeamColor, PlaylistMode, QuestionPlaylist, QuestionVariant } from '../types';
+import { resolveTeamQuestionVariants } from './variantEngine';
+import { filterQuestionPool, normalizeDifficulty, getDifficultyLabel, getDifficultyBadgeConfig, balancedLevelDistribution, getDifficultyDistribution, validateTeamFairness } from './questionPool';
+
+export {
+  resolveTeamQuestionVariants,
+  getResolvedQuestionForTeam,
+  validateTeamQuestionDistribution,
+  computeVariantSnapshotHash,
+  deterministicHash,
+} from './variantEngine';
+
+export {
+  filterQuestionPool,
+  normalizeDifficulty,
+  getDifficultyLabel,
+  getDifficultyBadgeConfig,
+  balancedLevelDistribution,
+  getDifficultyDistribution,
+  validateTeamFairness,
+} from './questionPool';
 
 export const INITIAL_TEAMS: Team[] = [
   { id: 'team-alpha', name: 'ALPHA', color: 'cyan', score: 0, correctCount: 0, wrongCount: 0 },
@@ -112,6 +132,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['250', '250cm', '250 centimeter', '250 cm'],
     points: 10,
     category: 'Konversi Panjang',
+    difficulty: 'easy',
     explanation: '1 meter = 100 cm, maka 2,5 m × 100 = 250 cm.',
     unitHint: 'cm',
   },
@@ -131,6 +152,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['Jangka Sorong', 'jangka sorong', 'B'],
     points: 10,
     category: 'Alat Ukur',
+    difficulty: 'medium',
     explanation: 'Jangka sorong memiliki rahang bawah untuk mengukur diameter luar benda bundar dengan ketelitian 0,01 cm.',
   },
   {
@@ -142,6 +164,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['120', '120 cm3', '120cm3', '120 cm^3', '120 kubik'],
     points: 10,
     category: 'Volume & Geometri',
+    difficulty: 'medium',
     explanation: 'Volume balok = panjang × lebar × tinggi = 8 × 5 × 3 = 120 cm³.',
     unitHint: 'cm³',
   },
@@ -161,6 +184,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['Kelvin', 'kelvin', 'C', 'K'],
     points: 10,
     category: 'Besaran & Satuan SI',
+    difficulty: 'easy',
     explanation: 'Dalam sistem Satuan Internasional (SI), standar baku suhu mutlak adalah Kelvin (K).',
   },
   {
@@ -172,6 +196,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['1000 gram', '1000 g', '1000g', '1000'],
     points: 10,
     category: 'Pernyataan Konversi Massa',
+    difficulty: 'easy',
     explanation: '1 kilogram = 1.000 gram (kilo = 10³ = seribu).',
     statementConfig: {
       statement: '1 kilogram massa benda setara dengan 100 gram.',
@@ -190,6 +215,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['60', '60 kmh', '60km/jam', '60 km / jam'],
     points: 10,
     category: 'Kecepatan & Waktu',
+    difficulty: 'medium',
     explanation: 'Kecepatan v = s / t = 120 km / 2 jam = 60 km/jam.',
     unitHint: 'km/jam',
   },
@@ -202,6 +228,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['benar', 'true'],
     points: 10,
     category: 'Pernyataan Alat Ukur',
+    difficulty: 'medium',
     explanation: 'Pernyataan benar, mikrometer sekrup memiliki ketelitian 0,01 mm atau 0,001 cm.',
     statementConfig: {
       statement: 'Mikrometer sekrup memiliki tingkat ketelitian 0,01 mm dan dapat digunakan untuk mengukur ketebalan koin atau kertas tipis.',
@@ -218,6 +245,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: [],
     points: 10,
     category: 'Soal Terstruktur',
+    difficulty: 'hard',
     explanation: 'ρ = m / V = 200 / 50 = 4 g/cm³. Karena ρ benda (4 g/cm³) > ρ air (1 g/cm³), benda akan tenggelam.',
     multiPartConfig: {
       introduction: 'Sebuah balok padat memiliki massa 200 gram dan volume 50 cm³. Balok tersebut kemudian dimasukkan ke dalam bejana berisi air (massa jenis air = 1 g/cm³).',
@@ -254,6 +282,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['A'],
     points: 10,
     category: 'Besaran Pokok & Turunan',
+    difficulty: 'easy',
     explanation: '7 besaran pokok: Panjang, Massa, Waktu, Suhu, Kuat Arus, Intensitas Cahaya, Jumlah Zat.',
   },
   {
@@ -265,6 +294,7 @@ export const DEMO_QUESTIONS: Question[] = [
     alternativeAnswers: ['900', '900 s', '900 s', '900detik', '900 sekon'],
     points: 10,
     category: 'Konversi Waktu',
+    difficulty: 'easy',
     explanation: '1 menit = 60 detik. 15 menit × 60 = 900 detik.',
     unitHint: 'detik',
   },
@@ -486,7 +516,10 @@ export interface PlaylistFilterOptions {
   playlistMode?: PlaylistMode;
   selectedTopic?: string;
   selectedTopics?: string[];
+  selectedDifficulty?: string;
+  questionCount?: number;
   customQuestionIds?: string[];
+  competitionId?: string;
 }
 
 /**
@@ -494,6 +527,7 @@ export interface PlaylistFilterOptions {
  * 1. 'all': All questions from master pool in their defined sequence.
  * 2. 'topic': Questions filtered by single selectedTopic.
  * 3. 'custom': Questions filtered by custom selection (customQuestionIds, or fallback selectedTopics).
+ * Also integrates Topic + Difficulty Level + Balanced Distribution constraints.
  * Strictly preserves master question order / sequence!
  */
 export function filterQuestionsByPlaylist(
@@ -502,6 +536,24 @@ export function filterQuestionsByPlaylist(
 ): Question[] {
   if (!questions || questions.length === 0) return [];
   const mode = options.playlistMode || 'all';
+
+  // If difficulty filter or count limit is explicitly set, route via filterQuestionPool
+  if (options.selectedDifficulty || (options.questionCount && options.questionCount > 0)) {
+    let targetTopic = '';
+    if (mode === 'topic') {
+      targetTopic = options.selectedTopic || '';
+    }
+
+    const result = filterQuestionPool({
+      questions,
+      topic: targetTopic,
+      difficulty: options.selectedDifficulty,
+      count: options.questionCount,
+      customQuestionIds: mode === 'custom' ? options.customQuestionIds : undefined,
+      competitionId: options.competitionId,
+    });
+    return result.selectedQuestions;
+  }
 
   if (mode === 'all') {
     return filterQuestionsByCategory(questions, '');
@@ -543,16 +595,20 @@ export function createDemoState(): {
   teams: Team[];
   questions: Question[];
   durationMinutes: number;
+  teamQuestionVariants?: Record<string, Record<string, QuestionVariant>>;
 } {
+  const teams: Team[] = [
+    { id: 'team-alpha', name: 'ALPHA', color: 'cyan', score: 0, correctCount: 0, wrongCount: 0 },
+    { id: 'team-bravo', name: 'BRAVO', color: 'emerald', score: 0, correctCount: 0, wrongCount: 0 },
+    { id: 'team-charlie', name: 'CHARLIE', color: 'amber', score: 0, correctCount: 0, wrongCount: 0 },
+    { id: 'team-delta', name: 'DELTA', color: 'rose', score: 0, correctCount: 0, wrongCount: 0 },
+  ];
+  const questions = [...DEMO_QUESTIONS];
   return {
-    teams: [
-      { id: 'team-alpha', name: 'ALPHA', color: 'cyan', score: 0, correctCount: 0, wrongCount: 0 },
-      { id: 'team-bravo', name: 'BRAVO', color: 'emerald', score: 0, correctCount: 0, wrongCount: 0 },
-      { id: 'team-charlie', name: 'CHARLIE', color: 'amber', score: 0, correctCount: 0, wrongCount: 0 },
-      { id: 'team-delta', name: 'DELTA', color: 'rose', score: 0, correctCount: 0, wrongCount: 0 },
-    ],
-    questions: [...DEMO_QUESTIONS],
+    teams,
+    questions,
     durationMinutes: 5,
+    teamQuestionVariants: resolveTeamQuestionVariants(teams, questions),
   };
 }
 
@@ -567,18 +623,27 @@ export function generateTeamCardDecks(
   teams: Team[],
   questions: Question[],
   _cardsPerTeam?: number,
-  _randomized: boolean = false
+  randomized: boolean = false
 ): Record<string, TeamCardAssignment[]> {
   const decks: Record<string, TeamCardAssignment[]> = {};
   if (!questions || questions.length === 0 || !teams || teams.length === 0) {
     return decks;
   }
 
-  // Strictly respect question sequence (order_index / array order)
+  // Generate deck for each team
   teams.forEach((team) => {
     const teamPrefix = team.name.replace(/[^A-Z0-9]/gi, '').slice(0, 3).toUpperCase() || 'K';
 
-    const cards: TeamCardAssignment[] = questions.map((q, cardIndex) => {
+    // If randomized is requested, create a unique permutation for this team
+    let teamQuestions = [...questions];
+    if (randomized) {
+      for (let i = teamQuestions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [teamQuestions[i], teamQuestions[j]] = [teamQuestions[j], teamQuestions[i]];
+      }
+    }
+
+    const cards: TeamCardAssignment[] = teamQuestions.map((q, cardIndex) => {
       const cardNum = cardIndex + 1;
       const formattedNum = String(cardNum).padStart(2, '0');
       return {

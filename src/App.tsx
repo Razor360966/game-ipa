@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GameState, Team, Question, GameSettings, PlaylistMode, TeamCardAssignment } from './types';
+import { GameState, Team, Question, GameSettings, PlaylistMode, TeamCardAssignment, VariantSnapshotMeta } from './types';
 import { getInitialGameState, saveGameState, DEFAULT_SETTINGS, getStoredRoomId, setStoredRoomId } from './utils/storage';
 import {
   generateTeamCardDecks,
@@ -9,6 +9,9 @@ import {
   filterQuestionsByCategory,
   filterQuestionsByPlaylist,
   getUniqueQuestionCategories,
+  getResolvedQuestionForTeam,
+  resolveTeamQuestionVariants,
+  computeVariantSnapshotHash,
 } from './utils/presets';
 import { sound } from './utils/sound';
 import { checkAnswer } from './utils/answerChecker';
@@ -554,10 +557,11 @@ export default function App() {
         attempts: 0,
       };
 
-      const question =
-        gameState.questions.find((q) => q.id === card.questionId) ||
-        gameState.questions[(numCard - 1) % Math.max(1, gameState.questions.length)] ||
-        gameState.questions[0];
+      const question = getResolvedQuestionForTeam(
+        gameState,
+        gameState.activeTeamId,
+        card.questionId || numCard
+      );
 
       if (!question) {
         isSubmittingRef.current = false;
@@ -727,6 +731,8 @@ export default function App() {
     options: {
       selectedTopic?: string;
       selectedTopics?: string[];
+      selectedDifficulty?: string;
+      questionCount?: number;
       customQuestionIds?: string[];
       playlistName?: string;
     }
@@ -740,17 +746,30 @@ export default function App() {
       playlistMode,
       selectedTopic: options.selectedTopic,
       selectedTopics: options.selectedTopics,
+      selectedDifficulty: options.selectedDifficulty,
+      questionCount: options.questionCount,
       customQuestionIds: options.customQuestionIds,
+      competitionId: currentRoomId,
     });
 
     const activeQuestionIds = snapshotQuestions.map((q) => q.id);
     const newDecks = generateTeamCardDecks(gameState.teams, snapshotQuestions);
+    const nextVariants = resolveTeamQuestionVariants(gameState.teams, snapshotQuestions, currentRoomId);
+    const snapshotHash = computeVariantSnapshotHash(nextVariants);
+    const snapshotMeta: VariantSnapshotMeta = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      engineVersion: 'v1.0-deterministic',
+      sourceQuestionIds: activeQuestionIds,
+      snapshotHash,
+    };
 
-    console.log('[PLAYLIST]');
+    console.log('[PLAYLIST SNAPSHOT CREATED]');
     console.log('selected playlist:', options.playlistName || options.selectedTopic || playlistMode);
+    console.log('difficulty:', options.selectedDifficulty || 'all');
     console.log('filtered questions:', snapshotQuestions.map((q) => q.code));
     console.log('activeQuestionIds:', activeQuestionIds);
-    console.log('snapshot count:', snapshotQuestions.length);
+    console.log('snapshotHash:', snapshotHash);
     console.log('deck count:', Object.keys(newDecks).map((tId) => `${tId}: ${newDecks[tId].length}`));
 
     setGameState((prev) => {
@@ -766,7 +785,11 @@ export default function App() {
             : 'Semua Soal Master'),
         selectedTopic: options.selectedTopic || '',
         selectedTopics: options.selectedTopics || [],
+        selectedDifficulty: options.selectedDifficulty || 'all',
+        questionCount: options.questionCount,
         customQuestionIds: activeQuestionIds,
+        teamQuestionVariants: nextVariants,
+        variantSnapshotMeta: snapshotMeta,
       };
 
       const nextState: GameState = {
@@ -775,6 +798,8 @@ export default function App() {
         settings: nextSettings,
         questions: snapshotQuestions, // MATCH QUESTION SNAPSHOT
         teamCardDecks: newDecks,
+        teamQuestionVariants: nextVariants,
+        variantSnapshotMeta: snapshotMeta,
       };
       saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
       return nextState;
@@ -789,17 +814,21 @@ export default function App() {
 
     handleApplyPlaylist(newTopic ? 'topic' : 'all', {
       selectedTopic: newTopic,
+      selectedDifficulty: gameState.settings.selectedDifficulty,
+      questionCount: gameState.settings.questionCount,
     });
   };
 
   const handleUpdateSettings = (newSettings: GameSettings) => {
     const topicChanged = (newSettings.selectedTopic || '') !== (gameState.settings.selectedTopic || '');
     const modeChanged = (newSettings.playlistMode || 'all') !== (gameState.settings.playlistMode || 'all');
+    const diffChanged = (newSettings.selectedDifficulty || 'all') !== (gameState.settings.selectedDifficulty || 'all');
+    const countChanged = (newSettings.questionCount || 0) !== (gameState.settings.questionCount || 0);
     const customIdsChanged =
       JSON.stringify(newSettings.customQuestionIds || []) !== JSON.stringify(gameState.settings.customQuestionIds || []);
 
-    if ((topicChanged || modeChanged || customIdsChanged) && gameState.orderLocked) {
-      console.warn('[Changing playlist or topic blocked because order is locked]');
+    if ((topicChanged || modeChanged || diffChanged || countChanged || customIdsChanged) && gameState.orderLocked) {
+      console.warn('[Changing playlist, difficulty or topic blocked because order is locked]');
       return;
     }
 
@@ -807,18 +836,22 @@ export default function App() {
     let nextDecks = gameState.teamCardDecks;
     let nextActiveIds = gameState.activeQuestionIds || gameState.questions.map((q) => q.id);
 
-    if ((topicChanged || modeChanged || customIdsChanged) && !gameState.orderLocked) {
+    if ((topicChanged || modeChanged || diffChanged || countChanged || customIdsChanged) && !gameState.orderLocked) {
       nextQuestions = filterQuestionsByPlaylist(masterQuestions, {
         playlistMode: newSettings.playlistMode,
         selectedTopic: newSettings.selectedTopic,
         selectedTopics: newSettings.selectedTopics,
+        selectedDifficulty: newSettings.selectedDifficulty,
+        questionCount: newSettings.questionCount,
         customQuestionIds: newSettings.customQuestionIds,
+        competitionId: currentRoomId,
       });
       nextActiveIds = nextQuestions.map((q) => q.id);
       nextDecks = generateTeamCardDecks(gameState.teams, nextQuestions);
     }
 
     setGameState((prev) => {
+      const nextVariants = resolveTeamQuestionVariants(gameState.teams, nextQuestions, currentRoomId);
       const nextState: GameState = {
         ...prev,
         activeQuestionIds: nextActiveIds,
@@ -828,6 +861,7 @@ export default function App() {
         },
         questions: nextQuestions,
         teamCardDecks: nextDecks,
+        teamQuestionVariants: nextVariants,
         timeRemainingSeconds: prev.status === 'ready' ? newSettings.durationMinutes * 60 : prev.timeRemainingSeconds,
       };
       saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
@@ -846,10 +880,12 @@ export default function App() {
         ? generateTeamCardDecks(newTeams, prev.questions)
         : prev.teamCardDecks;
 
+      const nextVariants = resolveTeamQuestionVariants(newTeams, prev.questions, currentRoomId);
       const nextState: GameState = {
         ...prev,
         teams: newTeams,
         teamCardDecks: newDecks,
+        teamQuestionVariants: nextVariants,
       };
 
       saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
@@ -873,10 +909,12 @@ export default function App() {
         ? generateTeamCardDecks(prev.teams, newQuestions)
         : prev.teamCardDecks;
 
+      const nextVariants = resolveTeamQuestionVariants(prev.teams, newQuestions, currentRoomId);
       const nextState: GameState = {
         ...prev,
         questions: newQuestions,
         teamCardDecks: newDecks,
+        teamQuestionVariants: nextVariants,
       };
 
       // Persist questions directly to Supabase
@@ -965,10 +1003,17 @@ export default function App() {
           ? generateTeamCardDecks(prev.teams, nextQuestions)
           : prev.teamCardDecks;
 
+        // Master Question Isolation: When editing a master question, preserve active match variant snapshot!
+        const nextVariants =
+          isEdit && prev.teamQuestionVariants && Object.keys(prev.teamQuestionVariants).length > 0
+            ? prev.teamQuestionVariants
+            : resolveTeamQuestionVariants(prev.teams, nextQuestions, currentRoomId);
+
         const nextState: GameState = {
           ...prev,
           questions: nextQuestions,
           teamCardDecks: newDecks,
+          teamQuestionVariants: nextVariants,
         };
         saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
         return nextState;
@@ -1006,10 +1051,12 @@ export default function App() {
           ? generateTeamCardDecks(prev.teams, nextQuestions)
           : prev.teamCardDecks;
 
+        const nextVariants = resolveTeamQuestionVariants(prev.teams, nextQuestions, currentRoomId);
         const nextState: GameState = {
           ...prev,
           questions: nextQuestions,
           teamCardDecks: newDecks,
+          teamQuestionVariants: nextVariants,
         };
         saveCompetitionToDb(nextState, currentRoomId).catch(() => {});
         return nextState;
@@ -1020,9 +1067,9 @@ export default function App() {
     }
   };
 
-  const handleRegenerateDecks = (_cardsPerTeam?: number, _randomized: boolean = false) => {
+  const handleRegenerateDecks = (cardsPerTeam?: number, randomized: boolean = false) => {
     setGameState((prev) => {
-      const newDecks = generateTeamCardDecks(prev.teams, prev.questions);
+      const newDecks = generateTeamCardDecks(prev.teams, prev.questions, cardsPerTeam, randomized);
       const nextState: GameState = {
         ...prev,
         teamCardDecks: newDecks,
@@ -1113,6 +1160,7 @@ export default function App() {
     const activeTopic = gameState.settings.selectedTopic || '';
     const filtered = filterQuestionsByCategory(DEMO_QUESTIONS, activeTopic);
     const decks = generateTeamCardDecks(demo.teams, filtered);
+    const variants = resolveTeamQuestionVariants(demo.teams, filtered, currentRoomId);
     const now = Date.now();
     const demoState: GameState = {
       competitionId: currentRoomId,
@@ -1127,6 +1175,7 @@ export default function App() {
       teams: demo.teams,
       questions: filtered,
       teamCardDecks: decks,
+      teamQuestionVariants: variants,
       status: 'ready',
       timeRemainingSeconds: 5 * 60,
       activeTeamId: null,
